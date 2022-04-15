@@ -148,8 +148,18 @@ Result<int32> HttpDate::parse_http_date(string slice) {
 }
 
 Result<SimpleConfig> decode_config(Slice input) {
+  //  static auto rsa = mtproto::RSA::from_pem_public_key(
+  //                        "-----BEGIN RSA PUBLIC KEY-----\n"
+  //                        "MIIBCgKCAQEAyr+18Rex2ohtVy8sroGP\n"
+  //                        "BwXD3DOoKCSpjDqYoXgCqB7ioln4eDCFfOBUlfXUEvM/fnKCpF46VkAftlb4VuPD\n"
+  //                        "eQSS/ZxZYEGqHaywlroVnXHIjgqoxiAd192xRGreuXIaUKmkwlM9JID9WS2jUsTp\n"
+  //                        "zQ91L8MEPLJ/4zrBwZua8W5fECwCCh2c9G5IzzBm+otMS/YKwmR1olzRCyEkyAEj\n"
+  //                        "XWqBI9Ftv5eG8m0VkBzOG655WIYdyV0HfDK/NWcvGqa0w/nriMD6mDjKOryamw0O\n"
+  //                        "P9QuYgMN0C9xMW9y8SmP4h92OAWodTYgY1hZCxdv6cs5UnW9+PWvS+WIbkh+GaWY\n"
+  //                        "xwIDAQAB\n"
+  //                        "-----END RSA PUBLIC KEY-----\n")
   static auto rsa = mtproto::RSA::from_pem_public_key(
-                        "-----BEGIN RSA PUBLIC KEY-----\n"
+                   "-----BEGIN RSA PUBLIC KEY-----\n"
                         "MIIBCgKCAQEAyr+18Rex2ohtVy8sroGP\n"
                         "BwXD3DOoKCSpjDqYoXgCqB7ioln4eDCFfOBUlfXUEvM/fnKCpF46VkAftlb4VuPD\n"
                         "eQSS/ZxZYEGqHaywlroVnXHIjgqoxiAd192xRGreuXIaUKmkwlM9JID9WS2jUsTp\n"
@@ -812,9 +822,9 @@ class ConfigRecoverer final : public Actor {
     if (need_simple_config) {
       ref_cnt_++;
       VLOG(config_recoverer) << "Ask simple config with turn " << simple_config_turn_;
-      auto promise = PromiseCreator::lambda([self = actor_shared(this)](Result<SimpleConfigResult> r_simple_config) {
-        send_closure(self, &ConfigRecoverer::on_simple_config, std::move(r_simple_config), false);
-      });
+      // auto promise = PromiseCreator::lambda([self = actor_shared(this)](Result<SimpleConfigResult> r_simple_config) {
+      //   send_closure(self, &ConfigRecoverer::on_simple_config, std::move(r_simple_config), false);
+      // });
       auto get_simple_config = [&] {
         switch (simple_config_turn_ % 10) {
           case 6:
@@ -836,8 +846,8 @@ class ConfigRecoverer final : public Actor {
             return get_simple_config_mozilla_dns;
         }
       }();
-      simple_config_query_ =
-          get_simple_config(std::move(promise), &G()->shared_config(), G()->is_test_dc(), G()->get_gc_scheduler_id());
+      // simple_config_query_ =
+      //     get_simple_config(std::move(promise), &G()->shared_config(), G()->is_test_dc(), G()->get_gc_scheduler_id());
       simple_config_turn_++;
     }
 

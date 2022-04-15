@@ -259,13 +259,14 @@ static td::IPAddress get_default_ip_address() {
 #if TD_EMSCRIPTEN
   ip_address.init_host_port("venus.web.telegram.org/apiws", 443).ensure();
 #else
-  ip_address.init_ipv4_port("149.154.167.40", 80).ensure();
+  // ip_address.init_ipv4_port("149.154.167.40", 80).ensure();
+  ip_address.init_ipv4_port("127.0.0.1", 10443).ensure();
 #endif
   return ip_address;
 }
 
 static td::int32 get_default_dc_id() {
-  return 10002;
+  return 10001;
 }
 
 class Mtproto_ping final : public td::Test {

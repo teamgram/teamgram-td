@@ -13,7 +13,7 @@
 
 int main() {
   // disable TDLib logging
-  td_execute("{\"@type\":\"setLogVerbosityLevel\", \"new_verbosity_level\":0}");
+  td_execute("{\"@type\":\"setLogVerbosityLevel\", \"new_verbosity_level\":1024}");
 
   int client_id = td_create_client_id();
   // somehow share the client_id with other threads, which will be able to send requests via td_send
