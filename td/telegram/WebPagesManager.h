@@ -16,13 +16,14 @@
 #include "td/telegram/WebPageId.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
-#include "td/actor/Timeout.h"
+#include "td/actor/MultiTimeout.h"
 
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/FlatHashSet.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
+#include "td/utils/WaitFreeHashMap.h"
 
 #include <utility>
 
@@ -179,7 +180,7 @@ class WebPagesManager final : public Actor {
 
   Td *td_;
   ActorShared<> parent_;
-  FlatHashMap<WebPageId, unique_ptr<WebPage>, WebPageIdHash> web_pages_;
+  WaitFreeHashMap<WebPageId, unique_ptr<WebPage>, WebPageIdHash> web_pages_;
 
   FlatHashMap<WebPageId, vector<Promise<Unit>>, WebPageIdHash> load_web_page_from_database_queries_;
   FlatHashSet<WebPageId, WebPageIdHash> loaded_from_database_web_pages_;

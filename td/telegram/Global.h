@@ -8,18 +8,19 @@
 
 #include "td/telegram/DhConfig.h"
 #include "td/telegram/net/DcId.h"
+#include "td/telegram/net/MtprotoHeader.h"
 #include "td/telegram/net/NetQueryCreator.h"
 #include "td/telegram/TdParameters.h"
 
 #include "td/net/NetStats.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 #include "td/actor/SchedulerLocalStorage.h"
 
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/logging.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/Time.h"
@@ -31,10 +32,11 @@
 namespace td {
 
 class AnimationsManager;
+class AttachMenuManager;
+class AuthManager;
 class BackgroundManager;
 class CallManager;
 class ConfigManager;
-class ConfigShared;
 class ConnectionCreator;
 class ContactsManager;
 class DownloadManager;
@@ -45,9 +47,9 @@ class GroupCallManager;
 class LanguagePackManager;
 class LinkManager;
 class MessagesManager;
-class MtprotoHeader;
 class NetQueryDispatcher;
 class NotificationManager;
+class NotificationSettingsManager;
 class OptionManager;
 class PasswordManager;
 class SecretChatsManager;
@@ -82,6 +84,8 @@ class Global final : public ActorContext {
     LOG_CHECK(td_db_) << close_flag() << " " << file << " " << line;
     return td_db_.get();
   }
+
+  void log_out(Slice reason);
 
   void close_all(Promise<> on_finished);
   void close_and_destroy_all(Promise<> on_finished);
@@ -123,12 +127,21 @@ class Global final : public ActorContext {
     return net_query_dispatcher_.get() != nullptr;
   }
 
-  void set_shared_config(unique_ptr<ConfigShared> shared_config);
+  void set_option_empty(Slice name);
 
-  ConfigShared &shared_config() {
-    CHECK(shared_config_.get() != nullptr);
-    return *shared_config_;
-  }
+  void set_option_boolean(Slice name, bool value);
+
+  void set_option_integer(Slice name, int64 value);
+
+  void set_option_string(Slice name, Slice value);
+
+  bool have_option(Slice name) const;
+
+  bool get_option_boolean(Slice name, bool default_value = false) const;
+
+  int64 get_option_integer(Slice name, int64 default_value = 0) const;
+
+  string get_option_string(Slice name, string default_value = "") const;
 
   bool is_server_time_reliable() const {
     return server_time_difference_was_updated_;
@@ -177,6 +190,17 @@ class Global final : public ActorContext {
   }
   void set_animations_manager(ActorId<AnimationsManager> animations_manager) {
     animations_manager_ = animations_manager;
+  }
+
+  ActorId<AttachMenuManager> attach_menu_manager() const {
+    return attach_menu_manager_;
+  }
+  void set_attach_menu_manager(ActorId<AttachMenuManager> attach_menu_manager) {
+    attach_menu_manager_ = attach_menu_manager;
+  }
+
+  void set_auth_manager(ActorId<AuthManager> auth_manager) {
+    auth_manager_ = auth_manager;
   }
 
   ActorId<BackgroundManager> background_manager() const {
@@ -270,10 +294,14 @@ class Global final : public ActorContext {
     notification_manager_ = notification_manager;
   }
 
-  ActorId<OptionManager> option_manager() const {
-    return option_manager_;
+  ActorId<NotificationSettingsManager> notification_settings_manager() const {
+    return notification_settings_manager_;
   }
-  void set_option_manager(ActorId<OptionManager> option_manager) {
+  void set_notification_settings_manager(ActorId<NotificationSettingsManager> notification_settings_manager) {
+    notification_settings_manager_ = notification_settings_manager;
+  }
+
+  void set_option_manager(OptionManager *option_manager) {
     option_manager_ = option_manager;
   }
 
@@ -356,13 +384,6 @@ class Global final : public ActorContext {
     return parameters_;
   }
 
-  int64 get_my_id() const {
-    return my_id_;
-  }
-  void set_my_id(int64 my_id) {
-    my_id_ = my_id;
-  }
-
   int32 get_gc_scheduler_id() const {
     return gc_scheduler_id_;
   }
@@ -420,6 +441,8 @@ class Global final : public ActorContext {
     return close_flag();
   }
 
+  static int32 get_retry_after(int32 error_code, Slice error_message);
+
   const std::vector<std::shared_ptr<NetStatsCallback>> &get_net_stats_file_callbacks() {
     return net_stats_file_callbacks_;
   }
@@ -442,6 +465,8 @@ class Global final : public ActorContext {
 
   ActorId<Td> td_;
   ActorId<AnimationsManager> animations_manager_;
+  ActorId<AttachMenuManager> attach_menu_manager_;
+  ActorId<AuthManager> auth_manager_;
   ActorId<BackgroundManager> background_manager_;
   ActorId<CallManager> call_manager_;
   ActorId<ConfigManager> config_manager_;
@@ -455,7 +480,7 @@ class Global final : public ActorContext {
   ActorId<LinkManager> link_manager_;
   ActorId<MessagesManager> messages_manager_;
   ActorId<NotificationManager> notification_manager_;
-  ActorId<OptionManager> option_manager_;
+  ActorId<NotificationSettingsManager> notification_settings_manager_;
   ActorId<PasswordManager> password_manager_;
   ActorId<SecretChatsManager> secret_chats_manager_;
   ActorId<SponsoredMessageManager> sponsored_message_manager_;
@@ -469,6 +494,8 @@ class Global final : public ActorContext {
   ActorOwn<TempAuthKeyWatchdog> temp_auth_key_watchdog_;
 
   unique_ptr<MtprotoHeader> mtproto_header_;
+
+  OptionManager *option_manager_ = nullptr;
 
   TdParameters parameters_;
   int32 gc_scheduler_id_ = 0;
@@ -496,15 +523,15 @@ class Global final : public ActorContext {
   LazySchedulerLocalStorage<unique_ptr<NetQueryCreator>> net_query_creator_;
   unique_ptr<NetQueryDispatcher> net_query_dispatcher_;
 
-  unique_ptr<ConfigShared> shared_config_;
-
-  int64 my_id_ = 0;  // hack
-
   static int64 get_location_key(double latitude, double longitude);
 
   FlatHashMap<int64, int64> location_access_hashes_;
 
   int32 to_unix_time(double server_time) const;
+
+  const OptionManager *get_option_manager() const;
+
+  OptionManager *get_option_manager();
 
   void do_save_server_time_difference();
 

@@ -98,6 +98,11 @@ long strm_ctrl(BIO *b, int cmd, long num, void *ptr) {
     case BIO_CTRL_PUSH:
     case BIO_CTRL_POP:
       return 0;
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    case BIO_CTRL_GET_KTLS_SEND:
+    case BIO_CTRL_GET_KTLS_RECV:
+      return 0;
+#endif
     default:
       LOG(FATAL) << b << " " << cmd << " " << num << " " << ptr;
   }
@@ -146,6 +151,7 @@ using SslCtx = std::shared_ptr<SSL_CTX>;
 
 struct SslHandleDeleter {
   void operator()(SSL *ssl_handle) {
+    auto start_time = Time::now();
     if (SSL_is_init_finished(ssl_handle)) {
       clear_openssl_errors("Before SSL_shutdown");
       SSL_set_quiet_shutdown(ssl_handle, 1);
@@ -153,6 +159,10 @@ struct SslHandleDeleter {
       clear_openssl_errors("After SSL_shutdown");
     }
     SSL_free(ssl_handle);
+    auto elapsed_time = Time::now() - start_time;
+    if (elapsed_time >= 0.1) {
+      LOG(ERROR) << "SSL_free took " << elapsed_time << " seconds";
+    }
   }
 };
 
@@ -284,7 +294,13 @@ Result<SslCtx> create_ssl_ctx(CSlice cert_file, SslStream::VerifyPeer verify_pee
       return get_default_unverified_ssl_ctx();
     }
   }
-  return do_create_ssl_ctx(cert_file, verify_peer);
+  auto start_time = Time::now();
+  auto result = do_create_ssl_ctx(cert_file, verify_peer);
+  auto elapsed_time = Time::now() - start_time;
+  if (elapsed_time >= 0.1) {
+    LOG(ERROR) << "do_create_ssl_ctx took " << elapsed_time << " seconds";
+  }
+  return result;
 }
 
 }  // namespace
@@ -367,7 +383,13 @@ class SslStreamImpl {
 
   Result<size_t> write(Slice slice) {
     clear_openssl_errors("Before SslFd::write");
+    auto start_time = Time::now();
     auto size = SSL_write(ssl_handle_.get(), slice.data(), static_cast<int>(slice.size()));
+    auto elapsed_time = Time::now() - start_time;
+    if (elapsed_time >= 0.1) {
+      LOG(ERROR) << "SSL_write of size " << slice.size() << " took " << elapsed_time << " seconds and returned " << size
+                 << ' ' << SSL_get_error(ssl_handle_.get(), size);
+    }
     if (size <= 0) {
       return process_ssl_error(size);
     }
@@ -376,7 +398,13 @@ class SslStreamImpl {
 
   Result<size_t> read(MutableSlice slice) {
     clear_openssl_errors("Before SslFd::read");
+    auto start_time = Time::now();
     auto size = SSL_read(ssl_handle_.get(), slice.data(), static_cast<int>(slice.size()));
+    auto elapsed_time = Time::now() - start_time;
+    if (elapsed_time >= 0.1) {
+      LOG(ERROR) << "SSL_read took " << elapsed_time << " seconds and returned " << size << ' '
+                 << SSL_get_error(ssl_handle_.get(), size);
+    }
     if (size <= 0) {
       return process_ssl_error(size);
     }

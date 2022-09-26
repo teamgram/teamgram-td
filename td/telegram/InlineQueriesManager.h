@@ -19,11 +19,11 @@
 
 #include "td/actor/actor.h"
 #include "td/actor/MultiPromise.h"
-#include "td/actor/PromiseFuture.h"
-#include "td/actor/Timeout.h"
+#include "td/actor/MultiTimeout.h"
 
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 
 #include <utility>
@@ -44,6 +44,16 @@ class InlineQueriesManager final : public Actor {
                            vector<td_api::object_ptr<td_api::InputInlineQueryResult>> &&input_results, int32 cache_time,
                            const string &next_offset, const string &switch_pm_text, const string &switch_pm_parameter,
                            Promise<Unit> &&promise) const;
+
+  void get_simple_web_view_url(UserId bot_user_id, string &&url,
+                               const td_api::object_ptr<td_api::themeParameters> &theme, string &&platform,
+                               Promise<string> &&promise);
+
+  void send_web_view_data(UserId bot_user_id, string &&button_text, string &&data, Promise<Unit> &&promise) const;
+
+  void answer_web_view_query(const string &web_view_query_id,
+                             td_api::object_ptr<td_api::InputInlineQueryResult> &&input_result,
+                             Promise<td_api::object_ptr<td_api::sentWebAppMessage>> &&promise) const;
 
   uint64 send_inline_query(UserId bot_user_id, DialogId dialog_id, Location user_location, const string &query,
                            const string &offset, Promise<Unit> &&promise);

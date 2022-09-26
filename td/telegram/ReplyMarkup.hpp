@@ -15,20 +15,32 @@ namespace td {
 
 template <class StorerT>
 void store(KeyboardButton button, StorerT &storer) {
+  bool has_url = !button.url.empty();
   BEGIN_STORE_FLAGS();
+  STORE_FLAG(has_url);
   END_STORE_FLAGS();
   store(button.type, storer);
   store(button.text, storer);
+  if (has_url) {
+    store(button.url, storer);
+  }
 }
 
 template <class ParserT>
 void parse(KeyboardButton &button, ParserT &parser) {
+  bool has_url;
   if (parser.version() >= static_cast<int32>(Version::AddKeyboardButtonFlags)) {
     BEGIN_PARSE_FLAGS();
+    PARSE_FLAG(has_url);
     END_PARSE_FLAGS();
+  } else {
+    has_url = false;
   }
   parse(button.type, parser);
   parse(button.text, parser);
+  if (has_url) {
+    parse(button.url, parser);
+  }
 }
 
 template <class StorerT>

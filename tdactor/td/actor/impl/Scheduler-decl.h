@@ -11,6 +11,7 @@
 #include "td/actor/impl/EventFull-decl.h"
 
 #include "td/utils/Closure.h"
+#include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/Heap.h"
 #include "td/utils/List.h"
@@ -22,6 +23,7 @@
 #include "td/utils/port/Poll.h"
 #include "td/utils/port/PollFlags.h"
 #include "td/utils/port/thread_local.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Time.h"
 #include "td/utils/type_traits.h"
@@ -98,6 +100,14 @@ class Scheduler {
   void send_to_scheduler(int32 sched_id, const ActorId<> &actor_id, Event &&event);
   void send_to_other_scheduler(int32 sched_id, const ActorId<> &actor_id, Event &&event);
 
+  void run_on_scheduler(int32 sched_id, Promise<Unit> action);  // TODO Action
+
+  template <class T>
+  void destroy_on_scheduler(int32 sched_id, T &value);
+
+  template <class... ArgsT>
+  void destroy_on_scheduler(int32 sched_id, ArgsT &...values);
+
   template <ActorSendType send_type, class EventT>
   void send_lambda(ActorRef actor_ref, EventT &&lambda);
 
@@ -145,6 +155,8 @@ class Scheduler {
 
  private:
   static void set_scheduler(Scheduler *scheduler);
+
+  void destroy_on_scheduler_impl(int32 sched_id, Promise<Unit> action);
 
   class ServiceActor final : public Actor {
    public:

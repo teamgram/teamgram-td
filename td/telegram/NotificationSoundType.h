@@ -6,14 +6,10 @@
 //
 #pragma once
 
-#include "td/utils/Slice.h"
+#include "td/utils/common.h"
 
 namespace td {
 
-class GitInfo {
- public:
-  static CSlice commit();
-  static bool is_dirty();
-};
+enum class NotificationSoundType : int32 { None, Local, Ringtone };
 
 }  // namespace td

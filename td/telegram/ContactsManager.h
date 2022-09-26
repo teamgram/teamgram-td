@@ -8,7 +8,9 @@
 
 #include "td/telegram/AccessRights.h"
 #include "td/telegram/BotCommand.h"
+#include "td/telegram/BotMenuButton.h"
 #include "td/telegram/ChannelId.h"
+#include "td/telegram/ChannelType.h"
 #include "td/telegram/ChatId.h"
 #include "td/telegram/Contact.h"
 #include "td/telegram/DialogAdministrator.h"
@@ -17,6 +19,7 @@
 #include "td/telegram/DialogLocation.h"
 #include "td/telegram/DialogParticipant.h"
 #include "td/telegram/DialogParticipantFilter.h"
+#include "td/telegram/EmojiStatus.h"
 #include "td/telegram/files/FileId.h"
 #include "td/telegram/files/FileSourceId.h"
 #include "td/telegram/FolderId.h"
@@ -25,6 +28,7 @@
 #include "td/telegram/MessageId.h"
 #include "td/telegram/net/DcId.h"
 #include "td/telegram/Photo.h"
+#include "td/telegram/PremiumGiftOption.h"
 #include "td/telegram/PublicDialogType.h"
 #include "td/telegram/QueryCombiner.h"
 #include "td/telegram/RestrictionReason.h"
@@ -37,16 +41,18 @@
 
 #include "td/actor/actor.h"
 #include "td/actor/MultiPromise.h"
-#include "td/actor/PromiseFuture.h"
-#include "td/actor/Timeout.h"
+#include "td/actor/MultiTimeout.h"
 
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/FlatHashSet.h"
 #include "td/utils/Hints.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
 #include "td/utils/Time.h"
+#include "td/utils/WaitFreeHashMap.h"
+#include "td/utils/WaitFreeHashSet.h"
 
 #include <functional>
 #include <memory>
@@ -76,9 +82,9 @@ class ContactsManager final : public Actor {
   static UserId get_user_id(const tl_object_ptr<telegram_api::User> &user);
   static ChatId get_chat_id(const tl_object_ptr<telegram_api::Chat> &chat);
   static ChannelId get_channel_id(const tl_object_ptr<telegram_api::Chat> &chat);
+  static DialogId get_dialog_id(const tl_object_ptr<telegram_api::Chat> &chat);
 
   Result<tl_object_ptr<telegram_api::InputUser>> get_input_user(UserId user_id) const;
-  bool have_input_user(UserId user_id) const;
 
   // TODO get_input_chat ???
 
@@ -116,6 +122,7 @@ class ContactsManager final : public Actor {
   bool get_channel_has_protected_content(ChannelId channel_id) const;
 
   string get_user_private_forward_name(UserId user_id);
+  bool get_user_voice_messages_forbidden(UserId user_id) const;
 
   string get_dialog_about(DialogId dialog_id);
 
@@ -147,8 +154,7 @@ class ContactsManager final : public Actor {
 
   void reload_contacts(bool force);
 
-  void on_get_user(tl_object_ptr<telegram_api::User> &&user, const char *source, bool is_me = false,
-                   bool expect_support = false);
+  void on_get_user(tl_object_ptr<telegram_api::User> &&user, const char *source, bool is_me = false);
   void on_get_users(vector<tl_object_ptr<telegram_api::User>> &&users, const char *source);
 
   void on_binlog_user_event(BinlogEvent &&event);
@@ -173,6 +179,7 @@ class ContactsManager final : public Actor {
   void on_update_user_name(UserId user_id, string &&first_name, string &&last_name, string &&username);
   void on_update_user_phone_number(UserId user_id, string &&phone_number);
   void on_update_user_photo(UserId user_id, tl_object_ptr<telegram_api::UserProfilePhoto> &&photo_ptr);
+  void on_update_user_emoji_status(UserId user_id, tl_object_ptr<telegram_api::EmojiStatus> &&emoji_status);
   void on_update_user_online(UserId user_id, tl_object_ptr<telegram_api::UserStatus> &&status);
   void on_update_user_local_was_online(UserId user_id, int32 local_was_online);
   void on_update_user_is_blocked(UserId user_id, bool is_blocked);
@@ -219,6 +226,8 @@ class ContactsManager final : public Actor {
   void on_update_bot_commands(DialogId dialog_id, UserId bot_user_id,
                               vector<tl_object_ptr<telegram_api::botCommand>> &&bot_commands);
 
+  void on_update_bot_menu_button(UserId bot_user_id, tl_object_ptr<telegram_api::BotMenuButton> &&bot_menu_button);
+
   void on_update_dialog_administrators(DialogId dialog_id, vector<DialogAdministrator> &&administrators,
                                        bool have_access, bool from_database);
 
@@ -243,7 +252,7 @@ class ContactsManager final : public Actor {
 
   void on_get_dialogs_for_discussion(vector<tl_object_ptr<telegram_api::Chat>> &&chats);
 
-  void on_get_inactive_channels(vector<tl_object_ptr<telegram_api::Chat>> &&chats);
+  void on_get_inactive_channels(vector<tl_object_ptr<telegram_api::Chat>> &&chats, Promise<Unit> &&promise);
 
   void remove_inactive_channel(ChannelId channel_id);
 
@@ -318,7 +327,7 @@ class ContactsManager final : public Actor {
 
   void set_location(const Location &location, Promise<Unit> &&promise);
 
-  void set_location_visibility();
+  static void set_location_visibility(Td *td);
 
   void get_is_location_visible(Promise<Unit> &&promise);
 
@@ -336,6 +345,8 @@ class ContactsManager final : public Actor {
 
   void set_username(const string &username, Promise<Unit> &&promise);
 
+  void set_emoji_status(EmojiStatus emoji_status, Promise<Unit> &&promise);
+
   void set_chat_description(ChatId chat_id, const string &description, Promise<Unit> &&promise);
 
   void set_channel_username(ChannelId channel_id, const string &username, Promise<Unit> &&promise);
@@ -343,6 +354,10 @@ class ContactsManager final : public Actor {
   void set_channel_sticker_set(ChannelId channel_id, StickerSetId sticker_set_id, Promise<Unit> &&promise);
 
   void toggle_channel_sign_messages(ChannelId channel_id, bool sign_messages, Promise<Unit> &&promise);
+
+  void toggle_channel_join_to_send(ChannelId channel_id, bool joint_to_send, Promise<Unit> &&promise);
+
+  void toggle_channel_join_request(ChannelId channel_id, bool join_request, Promise<Unit> &&promise);
 
   void toggle_channel_is_all_history_available(ChannelId channel_id, bool is_all_history_available,
                                                Promise<Unit> &&promise);
@@ -435,6 +450,8 @@ class ContactsManager final : public Actor {
 
   void check_created_public_dialogs_limit(PublicDialogType type, Promise<Unit> &&promise);
 
+  void reload_created_public_dialogs(PublicDialogType type, Promise<td_api::object_ptr<td_api::chats>> &&promise);
+
   vector<DialogId> get_dialogs_for_discussion(Promise<Unit> &&promise);
 
   vector<DialogId> get_inactive_channels(Promise<Unit> &&promise);
@@ -442,6 +459,8 @@ class ContactsManager final : public Actor {
   void dismiss_dialog_suggested_action(SuggestedAction action, Promise<Unit> &&promise);
 
   bool is_user_contact(UserId user_id, bool is_mutual = false) const;
+
+  bool is_user_premium(UserId user_id) const;
 
   bool is_user_deleted(UserId user_id) const;
 
@@ -455,6 +474,7 @@ class ContactsManager final : public Actor {
     bool can_read_all_group_messages;
     bool is_inline;
     bool need_location;
+    bool can_be_added_to_attach_menu;
   };
   Result<BotData> get_bot_data(UserId user_id) const TD_WARN_UNUSED_RESULT;
 
@@ -477,7 +497,8 @@ class ContactsManager final : public Actor {
   bool get_user(UserId user_id, int left_tries, Promise<Unit> &&promise);
   void reload_user(UserId user_id, Promise<Unit> &&promise);
   void load_user_full(UserId user_id, bool force, Promise<Unit> &&promise, const char *source);
-  void reload_user_full(UserId user_id);
+  FileSourceId get_user_full_file_source_id(UserId user_id);
+  void reload_user_full(UserId user_id, Promise<Unit> &&promise);
 
   std::pair<int32, vector<const Photo *>> get_user_profile_photos(UserId user_id, int32 offset, int32 limit,
                                                                   Promise<Unit> &&promise);
@@ -492,6 +513,7 @@ class ContactsManager final : public Actor {
   FileSourceId get_chat_full_file_source_id(ChatId chat_id);
   void reload_chat_full(ChatId chat_id, Promise<Unit> &&promise);
 
+  int32 get_chat_date(ChatId chat_id) const;
   int32 get_chat_participant_count(ChatId chat_id) const;
   bool get_chat_is_active(ChatId chat_id) const;
   ChannelId get_chat_migrated_to_channel_id(ChatId chat_id) const;
@@ -518,15 +540,16 @@ class ContactsManager final : public Actor {
   bool get_secret_chat(SecretChatId secret_chat_id, bool force, Promise<Unit> &&promise);
   bool get_secret_chat_full(SecretChatId secret_chat_id, Promise<Unit> &&promise);
 
-  enum class ChannelType : uint8 { Broadcast, Megagroup, Unknown };
-
   ChannelType get_channel_type(ChannelId channel_id) const;
+  bool is_broadcast_channel(ChannelId channel_id) const;
+  bool is_megagroup_channel(ChannelId channel_id) const;
   int32 get_channel_date(ChannelId channel_id) const;
   DialogParticipantStatus get_channel_status(ChannelId channel_id) const;
   DialogParticipantStatus get_channel_permissions(ChannelId channel_id) const;
   int32 get_channel_participant_count(ChannelId channel_id) const;
   bool get_channel_sign_messages(ChannelId channel_id) const;
   bool get_channel_has_linked_channel(ChannelId channel_id) const;
+  bool get_channel_can_be_deleted(ChannelId channel_id) const;
   ChannelId get_channel_linked_channel_id(ChannelId channel_id);
   int32 get_channel_slow_mode_delay(ChannelId channel_id);
 
@@ -535,10 +558,14 @@ class ContactsManager final : public Actor {
   void add_dialog_participants(DialogId dialog_id, const vector<UserId> &user_ids, Promise<Unit> &&promise);
 
   void set_dialog_participant_status(DialogId dialog_id, DialogId participant_dialog_id,
-                                     DialogParticipantStatus &&status, Promise<Unit> &&promise);
+                                     td_api::object_ptr<td_api::ChatMemberStatus> &&chat_member_status,
+                                     Promise<Unit> &&promise);
 
   void ban_dialog_participant(DialogId dialog_id, DialogId participant_dialog_id, int32 banned_until_date,
                               bool revoke_messages, Promise<Unit> &&promise);
+
+  void on_set_channel_participant_status(ChannelId channel_id, DialogId participant_dialog_id,
+                                         DialogParticipantStatus status);
 
   void get_dialog_participant(DialogId dialog_id, DialogId participant_dialog_id,
                               Promise<td_api::object_ptr<td_api::chatMember>> &&promise);
@@ -586,11 +613,9 @@ class ContactsManager final : public Actor {
 
   tl_object_ptr<td_api::chatInviteLinkInfo> get_chat_invite_link_info_object(const string &invite_link);
 
-  UserId get_support_user(Promise<Unit> &&promise);
+  void get_support_user(Promise<td_api::object_ptr<td_api::user>> &&promise);
 
   void repair_chat_participants(ChatId chat_id);
-
-  void after_get_difference();
 
   void get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const;
 
@@ -620,6 +645,8 @@ class ContactsManager final : public Actor {
     string username;
     string phone_number;
     int64 access_hash = -1;
+    EmojiStatus emoji_status;
+    int64 last_sent_emoji_status = 0;
 
     ProfilePhoto photo;
 
@@ -642,6 +669,7 @@ class ContactsManager final : public Actor {
     bool is_min_access_hash = true;
     bool is_received = false;
     bool is_verified = false;
+    bool is_premium = false;
     bool is_support = false;
     bool is_deleted = true;
     bool is_bot = true;
@@ -654,6 +682,8 @@ class ContactsManager final : public Actor {
     bool is_contact = false;
     bool is_mutual_contact = false;
     bool need_apply_min_photo = false;
+    bool can_be_added_to_attach_menu = false;
+    bool attach_menu_enabled = false;
 
     bool is_photo_inited = false;
 
@@ -691,10 +721,19 @@ class ContactsManager final : public Actor {
     Photo photo;
 
     string about;
-    string description;
     string private_forward_name;
+    string description;
+    Photo description_photo;
+    FileId description_animation_file_id;
+    vector<FileId> registered_file_ids;
+    FileSourceId file_source_id;
 
+    vector<PremiumGiftOption> premium_gift_options;
+
+    unique_ptr<BotMenuButton> menu_button;
     vector<BotCommand> commands;
+    AdministratorRights group_administrator_rights;
+    AdministratorRights broadcast_administrator_rights;
 
     int32 common_chat_count = 0;
 
@@ -704,8 +743,10 @@ class ContactsManager final : public Actor {
     bool has_private_calls = false;
     bool can_pin_messages = true;
     bool need_phone_number_privacy_exception = false;
+    bool voice_messages_forbidden = false;
 
     bool is_common_chat_count_changed = true;
+    bool are_files_changed = true;
     bool is_changed = true;             // have new changes that need to be sent to the client and database
     bool need_send_update = true;       // have new changes that need only to be sent to the client
     bool need_save_to_database = true;  // have new changes that need only to be saved to the database
@@ -810,7 +851,7 @@ class ContactsManager final : public Actor {
     int32 date = 0;
     int32 participant_count = 0;
 
-    static constexpr uint32 CACHE_VERSION = 8;
+    static constexpr uint32 CACHE_VERSION = 9;
     uint32 cache_version = 0;
 
     bool has_linked_channel = false;
@@ -818,6 +859,9 @@ class ContactsManager final : public Actor {
     bool sign_messages = false;
     bool is_slow_mode_enabled = false;
     bool noforwards = false;
+    bool can_be_deleted = false;
+    bool join_to_send = false;
+    bool join_request = false;
 
     bool is_megagroup = false;
     bool is_gigagroup = false;
@@ -897,6 +941,7 @@ class ContactsManager final : public Actor {
     bool can_view_statistics = false;
     bool is_can_view_statistics_inited = false;
     bool is_all_history_available = true;
+    bool can_be_deleted = false;
 
     bool is_slow_mode_next_send_date_changed = true;
     bool is_changed = true;             // have new changes that need to be sent to the client and database
@@ -998,7 +1043,6 @@ class ContactsManager final : public Actor {
   static constexpr int32 MAX_GET_PROFILE_PHOTOS = 100;        // server side limit
   static constexpr size_t MAX_NAME_LENGTH = 64;               // server side limit for first/last name
   static constexpr size_t MAX_DESCRIPTION_LENGTH = 255;       // server side limit for chat/channel description
-  static constexpr size_t MAX_BIO_LENGTH = 70;                // server side limit
   static constexpr size_t MAX_INVITE_LINK_TITLE_LENGTH = 32;  // server side limit
   static constexpr int32 MAX_GET_CHANNEL_PARTICIPANTS = 200;  // server side limit
 
@@ -1029,6 +1073,10 @@ class ContactsManager final : public Actor {
   static constexpr int32 USER_FLAG_IS_SCAM = 1 << 24;
   static constexpr int32 USER_FLAG_NEED_APPLY_MIN_PHOTO = 1 << 25;
   static constexpr int32 USER_FLAG_IS_FAKE = 1 << 26;
+  static constexpr int32 USER_FLAG_IS_ATTACH_MENU_BOT = 1 << 27;
+  static constexpr int32 USER_FLAG_IS_PREMIUM = 1 << 28;
+  static constexpr int32 USER_FLAG_ATTACH_MENU_ENABLED = 1 << 29;
+  static constexpr int32 USER_FLAG_HAS_EMOJI_STATUS = 1 << 30;
 
   static constexpr int32 USER_FULL_FLAG_IS_BLOCKED = 1 << 0;
   static constexpr int32 USER_FULL_FLAG_HAS_ABOUT = 1 << 1;
@@ -1040,9 +1088,11 @@ class ContactsManager final : public Actor {
   static constexpr int32 USER_FULL_FLAG_HAS_SCHEDULED_MESSAGES = 1 << 12;
   static constexpr int32 USER_FULL_FLAG_HAS_MESSAGE_TTL = 1 << 14;
   static constexpr int32 USER_FULL_FLAG_HAS_PRIVATE_FORWARD_NAME = 1 << 16;
+  static constexpr int32 USER_FULL_FLAG_HAS_GROUP_ADMINISTRATOR_RIGHTS = 1 << 17;
+  static constexpr int32 USER_FULL_FLAG_HAS_BROADCAST_ADMINISTRATOR_RIGHTS = 1 << 18;
+  static constexpr int32 USER_FULL_FLAG_HAS_VOICE_MESSAGES_FORBIDDEN = 1 << 20;
 
   static constexpr int32 CHAT_FLAG_USER_IS_CREATOR = 1 << 0;
-  static constexpr int32 CHAT_FLAG_USER_WAS_KICKED = 1 << 1;
   static constexpr int32 CHAT_FLAG_USER_HAS_LEFT = 1 << 2;
   // static constexpr int32 CHAT_FLAG_ADMINISTRATORS_ENABLED = 1 << 3;
   // static constexpr int32 CHAT_FLAG_IS_ADMINISTRATOR = 1 << 4;
@@ -1084,6 +1134,8 @@ class ContactsManager final : public Actor {
   static constexpr int32 CHANNEL_FLAG_IS_FAKE = 1 << 25;
   static constexpr int32 CHANNEL_FLAG_IS_GIGAGROUP = 1 << 26;
   static constexpr int32 CHANNEL_FLAG_NOFORWARDS = 1 << 27;
+  static constexpr int32 CHANNEL_FLAG_JOIN_TO_SEND = 1 << 28;
+  static constexpr int32 CHANNEL_FLAG_JOIN_REQUEST = 1 << 29;
 
   static constexpr int32 CHANNEL_FULL_FLAG_HAS_PARTICIPANT_COUNT = 1 << 0;
   static constexpr int32 CHANNEL_FULL_FLAG_HAS_ADMINISTRATOR_COUNT = 1 << 1;
@@ -1193,15 +1245,21 @@ class ContactsManager final : public Actor {
   DialogParticipantStatus get_channel_permissions(const Channel *c) const;
   static bool get_channel_sign_messages(const Channel *c);
   static bool get_channel_has_linked_channel(const Channel *c);
+  static bool get_channel_can_be_deleted(const Channel *c);
+  static bool get_channel_join_to_send(const Channel *c);
+  static bool get_channel_join_request(const Channel *c);
 
   void set_my_id(UserId my_id);
 
   static bool is_valid_username(const string &username);
 
+  void on_set_emoji_status(EmojiStatus emoji_status, Promise<Unit> &&promise);
+
   void on_update_user_name(User *u, UserId user_id, string &&first_name, string &&last_name, string &&username);
   void on_update_user_phone_number(User *u, UserId user_id, string &&phone_number);
   void on_update_user_photo(User *u, UserId user_id, tl_object_ptr<telegram_api::UserProfilePhoto> &&photo,
                             const char *source);
+  void on_update_user_emoji_status(User *u, UserId user_id, EmojiStatus emoji_status);
   void on_update_user_is_contact(User *u, UserId user_id, bool is_contact, bool is_mutual_contact);
   void on_update_user_online(User *u, UserId user_id, tl_object_ptr<telegram_api::UserStatus> &&status);
   void on_update_user_local_was_online(User *u, UserId user_id, int32 local_was_online);
@@ -1210,6 +1268,7 @@ class ContactsManager final : public Actor {
                             const char *source);
   void do_update_user_photo(User *u, UserId user_id, ProfilePhoto &&new_photo, bool invalidate_photo_cache,
                             const char *source);
+  void apply_pending_user_photo(User *u, UserId user_id);
 
   void upload_profile_photo(FileId file_id, bool is_animation, double main_frame_timestamp, Promise<Unit> &&promise,
                             int reupload_count = 0, vector<int> bad_parts = {});
@@ -1223,6 +1282,8 @@ class ContactsManager final : public Actor {
   static void on_update_user_full_common_chat_count(UserFull *user_full, UserId user_id, int32 common_chat_count);
   static void on_update_user_full_commands(UserFull *user_full, UserId user_id,
                                            vector<tl_object_ptr<telegram_api::botCommand>> &&bot_commands);
+  static void on_update_user_full_menu_button(UserFull *user_full, UserId user_id,
+                                              tl_object_ptr<telegram_api::BotMenuButton> &&bot_menu_button);
   void on_update_user_full_need_phone_number_privacy_exception(UserFull *user_full, UserId user_id,
                                                                bool need_phone_number_privacy_exception) const;
 
@@ -1237,6 +1298,7 @@ class ContactsManager final : public Actor {
   void on_update_chat_participant_count(Chat *c, ChatId chat_id, int32 participant_count, int32 version,
                                         const string &debug_str);
   void on_update_chat_photo(Chat *c, ChatId chat_id, tl_object_ptr<telegram_api::ChatPhoto> &&chat_photo_ptr);
+  void on_update_chat_photo(Chat *c, ChatId chat_id, DialogPhoto &&photo, bool invalidate_photo_cache);
   static void on_update_chat_title(Chat *c, ChatId chat_id, string &&title);
   static void on_update_chat_active(Chat *c, ChatId chat_id, bool is_active);
   static void on_update_chat_migrated_to_channel_id(Chat *c, ChatId chat_id, ChannelId migrated_to_channel_id);
@@ -1247,10 +1309,11 @@ class ContactsManager final : public Actor {
   void on_update_chat_full_participants(ChatFull *chat_full, ChatId chat_id, vector<DialogParticipant> participants,
                                         int32 version, bool from_update);
   void on_update_chat_full_invite_link(ChatFull *chat_full,
-                                       tl_object_ptr<telegram_api::chatInviteExported> &&invite_link);
+                                       tl_object_ptr<telegram_api::ExportedChatInvite> &&invite_link);
 
   void on_update_channel_photo(Channel *c, ChannelId channel_id,
                                tl_object_ptr<telegram_api::ChatPhoto> &&chat_photo_ptr);
+  void on_update_channel_photo(Channel *c, ChannelId channel_id, DialogPhoto &&photo, bool invalidate_photo_cache);
   static void on_update_channel_title(Channel *c, ChannelId channel_id, string &&title);
   void on_update_channel_username(Channel *c, ChannelId channel_id, string &&username);
   void on_update_channel_status(Channel *c, ChannelId channel_id, DialogParticipantStatus &&status);
@@ -1263,7 +1326,7 @@ class ContactsManager final : public Actor {
 
   void on_update_channel_full_photo(ChannelFull *channel_full, ChannelId channel_id, Photo photo);
   void on_update_channel_full_invite_link(ChannelFull *channel_full,
-                                          tl_object_ptr<telegram_api::chatInviteExported> &&invite_link);
+                                          tl_object_ptr<telegram_api::ExportedChatInvite> &&invite_link);
   void on_update_channel_full_linked_channel_id(ChannelFull *channel_full, ChannelId channel_id,
                                                 ChannelId linked_channel_id);
   void on_update_channel_full_location(ChannelFull *channel_full, ChannelId channel_id, const DialogLocation &location);
@@ -1289,10 +1352,7 @@ class ContactsManager final : public Actor {
   void speculative_add_channel_user(ChannelId channel_id, UserId user_id, const DialogParticipantStatus &new_status,
                                     const DialogParticipantStatus &old_status);
 
-  void drop_chat_photos(ChatId chat_id, bool is_empty, bool drop_chat_full_photo, const char *source);
   void drop_chat_full(ChatId chat_id);
-
-  void drop_channel_photos(ChannelId channel_id, bool is_empty, bool drop_channel_full_photo, const char *source);
 
   void do_invalidate_channel_full(ChannelFull *channel_full, ChannelId channel_id, bool need_drop_slow_mode_delay);
 
@@ -1374,7 +1434,7 @@ class ContactsManager final : public Actor {
   void update_channel_full(ChannelFull *channel_full, ChannelId channel_id, const char *source,
                            bool from_database = false);
 
-  static bool is_chat_full_outdated(const ChatFull *chat_full, const Chat *c, ChatId chat_id);
+  bool is_chat_full_outdated(const ChatFull *chat_full, const Chat *c, ChatId chat_id, bool only_participants) const;
 
   bool is_user_contact(const User *u, UserId user_id, bool is_mutual) const;
 
@@ -1434,8 +1494,6 @@ class ContactsManager final : public Actor {
 
   static void return_created_public_dialogs(Promise<td_api::object_ptr<td_api::chats>> &&promise,
                                             const vector<ChannelId> &channel_ids);
-
-  void reload_created_public_dialogs(PublicDialogType type, Promise<td_api::object_ptr<td_api::chats>> &&promise);
 
   void finish_get_created_public_dialogs(PublicDialogType type, Result<Unit> &&result);
 
@@ -1550,13 +1608,9 @@ class ContactsManager final : public Actor {
 
   vector<DialogId> get_dialog_ids(vector<tl_object_ptr<telegram_api::Chat>> &&chats, const char *source);
 
+  void on_create_inactive_channels(vector<ChannelId> &&channel_ids, Promise<Unit> &&promise);
+
   void update_dialogs_for_discussion(DialogId dialog_id, bool is_suitable);
-
-  void set_chat_participant_status(ChatId chat_id, UserId user_id, DialogParticipantStatus status,
-                                   Promise<Unit> &&promise);
-
-  void set_channel_participant_status(ChannelId channel_id, DialogId participant_dialog_id,
-                                      DialogParticipantStatus status, Promise<Unit> &&promise);
 
   void send_edit_chat_admin_query(ChatId chat_id, UserId user_id, bool is_administrator, Promise<Unit> &&promise);
 
@@ -1578,7 +1632,17 @@ class ContactsManager final : public Actor {
   void add_channel_participant_to_cache(ChannelId channel_id, const DialogParticipant &dialog_participant,
                                         bool allow_replace);
 
+  void update_channel_participant_status_cache(ChannelId channel_id, DialogId participant_dialog_id,
+                                               DialogParticipantStatus &&dialog_participant_status);
+
   const DialogParticipant *get_channel_participant_from_cache(ChannelId channel_id, DialogId participant_dialog_id);
+
+  void set_chat_participant_status(ChatId chat_id, UserId user_id, DialogParticipantStatus status,
+                                   Promise<Unit> &&promise);
+
+  void set_channel_participant_status(ChannelId channel_id, DialogId participant_dialog_id,
+                                      td_api::object_ptr<td_api::ChatMemberStatus> &&chat_member_status,
+                                      Promise<Unit> &&promise);
 
   void set_channel_participant_status_impl(ChannelId channel_id, DialogId participant_dialog_id,
                                            DialogParticipantStatus status, DialogParticipantStatus old_status,
@@ -1610,7 +1674,11 @@ class ContactsManager final : public Actor {
   void send_load_async_graph_query(DcId dc_id, string token, int64 x,
                                    Promise<td_api::object_ptr<td_api::StatisticalGraph>> &&promise);
 
+  void on_get_support_user(UserId user_id, Promise<td_api::object_ptr<td_api::user>> &&promise);
+
   static void on_user_online_timeout_callback(void *contacts_manager_ptr, int64 user_id_long);
+
+  static void on_user_emoji_status_timeout_callback(void *contacts_manager_ptr, int64 user_id_long);
 
   static void on_channel_unban_timeout_callback(void *contacts_manager_ptr, int64 channel_id_long);
 
@@ -1624,6 +1692,8 @@ class ContactsManager final : public Actor {
 
   void on_user_online_timeout(UserId user_id);
 
+  void on_user_emoji_status_timeout(UserId user_id);
+
   void on_channel_unban_timeout(ChannelId channel_id);
 
   void on_user_nearby_timeout(UserId user_id);
@@ -1634,6 +1704,8 @@ class ContactsManager final : public Actor {
 
   void on_channel_participant_cache_timeout(ChannelId channel_id);
 
+  void start_up() final;
+
   void tear_down() final;
 
   Td *td_;
@@ -1642,8 +1714,8 @@ class ContactsManager final : public Actor {
   UserId support_user_id_;
   int32 my_was_online_local_ = 0;
 
-  FlatHashMap<UserId, unique_ptr<User>, UserIdHash> users_;
-  FlatHashMap<UserId, unique_ptr<UserFull>, UserIdHash> users_full_;
+  WaitFreeHashMap<UserId, unique_ptr<User>, UserIdHash> users_;
+  WaitFreeHashMap<UserId, unique_ptr<UserFull>, UserIdHash> users_full_;
   FlatHashMap<UserId, UserPhotos, UserIdHash> user_photos_;
   mutable FlatHashSet<UserId, UserIdHash> unknown_users_;
   FlatHashMap<UserId, tl_object_ptr<telegram_api::UserProfilePhoto>, UserIdHash> pending_user_photos_;
@@ -1652,22 +1724,23 @@ class ContactsManager final : public Actor {
       return UserIdHash()(pair.first) * 2023654985u + std::hash<int64>()(pair.second);
     }
   };
-  FlatHashMap<std::pair<UserId, int64>, FileSourceId, UserIdPhotoIdHash> user_profile_photo_file_source_ids_;
+  WaitFreeHashMap<std::pair<UserId, int64>, FileSourceId, UserIdPhotoIdHash> user_profile_photo_file_source_ids_;
   FlatHashMap<int64, FileId> my_photo_file_id_;
+  WaitFreeHashMap<UserId, FileSourceId, UserIdHash> user_full_file_source_ids_;
 
-  FlatHashMap<ChatId, unique_ptr<Chat>, ChatIdHash> chats_;
-  FlatHashMap<ChatId, unique_ptr<ChatFull>, ChatIdHash> chats_full_;
+  WaitFreeHashMap<ChatId, unique_ptr<Chat>, ChatIdHash> chats_;
+  WaitFreeHashMap<ChatId, unique_ptr<ChatFull>, ChatIdHash> chats_full_;
   mutable FlatHashSet<ChatId, ChatIdHash> unknown_chats_;
-  FlatHashMap<ChatId, FileSourceId, ChatIdHash> chat_full_file_source_ids_;
+  WaitFreeHashMap<ChatId, FileSourceId, ChatIdHash> chat_full_file_source_ids_;
 
-  FlatHashMap<ChannelId, unique_ptr<MinChannel>, ChannelIdHash> min_channels_;
-  FlatHashMap<ChannelId, unique_ptr<Channel>, ChannelIdHash> channels_;
-  FlatHashMap<ChannelId, unique_ptr<ChannelFull>, ChannelIdHash> channels_full_;
+  WaitFreeHashMap<ChannelId, unique_ptr<MinChannel>, ChannelIdHash> min_channels_;
+  WaitFreeHashMap<ChannelId, unique_ptr<Channel>, ChannelIdHash> channels_;
+  WaitFreeHashMap<ChannelId, unique_ptr<ChannelFull>, ChannelIdHash> channels_full_;
   mutable FlatHashSet<ChannelId, ChannelIdHash> unknown_channels_;
-  FlatHashSet<ChannelId, ChannelIdHash> invalidated_channels_full_;
-  FlatHashMap<ChannelId, FileSourceId, ChannelIdHash> channel_full_file_source_ids_;
+  WaitFreeHashSet<ChannelId, ChannelIdHash> invalidated_channels_full_;
+  WaitFreeHashMap<ChannelId, FileSourceId, ChannelIdHash> channel_full_file_source_ids_;
 
-  FlatHashMap<SecretChatId, unique_ptr<SecretChat>, SecretChatIdHash> secret_chats_;
+  WaitFreeHashMap<SecretChatId, unique_ptr<SecretChat>, SecretChatIdHash> secret_chats_;
   mutable FlatHashSet<SecretChatId, SecretChatIdHash> unknown_secret_chats_;
 
   FlatHashMap<UserId, vector<SecretChatId>, UserIdHash> secret_chats_with_user_;
@@ -1686,8 +1759,8 @@ class ContactsManager final : public Actor {
   bool dialogs_for_discussion_inited_ = false;
   vector<DialogId> dialogs_for_discussion_;
 
-  bool inactive_channels_inited_ = false;
-  vector<ChannelId> inactive_channels_;
+  bool inactive_channel_ids_inited_ = false;
+  vector<ChannelId> inactive_channel_ids_;
 
   FlatHashMap<UserId, vector<Promise<Unit>>, UserIdHash> load_user_from_database_queries_;
   FlatHashSet<UserId, UserIdHash> loaded_from_database_users_;
@@ -1781,10 +1854,10 @@ class ContactsManager final : public Actor {
   bool is_set_location_visibility_request_sent_ = false;
   Location last_user_location_;
 
-  FlatHashMap<ChannelId, ChannelId, ChannelIdHash> linked_channel_ids_;
+  WaitFreeHashMap<ChannelId, ChannelId, ChannelIdHash> linked_channel_ids_;
 
-  FlatHashSet<UserId, UserIdHash> restricted_user_ids_;
-  FlatHashSet<ChannelId, ChannelIdHash> restricted_channel_ids_;
+  WaitFreeHashSet<UserId, UserIdHash> restricted_user_ids_;
+  WaitFreeHashSet<ChannelId, ChannelIdHash> restricted_channel_ids_;
 
   vector<Contact> next_all_imported_contacts_;
   vector<size_t> imported_contacts_unique_id_;
@@ -1794,6 +1867,7 @@ class ContactsManager final : public Actor {
   vector<int32> unimported_contact_invites_;  // result of change_imported_contacts
 
   MultiTimeout user_online_timeout_{"UserOnlineTimeout"};
+  MultiTimeout user_emoji_status_timeout_{"UserEmojiStatusTimeout"};
   MultiTimeout channel_unban_timeout_{"ChannelUnbanTimeout"};
   MultiTimeout user_nearby_timeout_{"UserNearbyTimeout"};
   MultiTimeout slow_mode_delay_timeout_{"SlowModeDelayTimeout"};

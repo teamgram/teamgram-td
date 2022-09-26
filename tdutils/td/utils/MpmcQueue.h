@@ -14,7 +14,7 @@
 #include "td/utils/format.h"
 #include "td/utils/HazardPointers.h"
 #include "td/utils/logging.h"
-#include "td/utils/port/thread.h"
+#include "td/utils/port/sleep.h"
 #include "td/utils/ScopeGuard.h"
 
 #include <array>
@@ -305,7 +305,7 @@ class MpmcQueueOld {
       if (try_pop(value, thread_id)) {
         return value;
       }
-      td::this_thread::yield();
+      usleep_for(1);
     }
   }
 
@@ -429,7 +429,7 @@ class MpmcQueue {
       if (try_pop(value, thread_id)) {
         return value;
       }
-      td::this_thread::yield();
+      usleep_for(1);
     }
   }
 

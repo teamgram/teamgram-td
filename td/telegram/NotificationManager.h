@@ -17,16 +17,17 @@
 #include "td/telegram/NotificationGroupType.h"
 #include "td/telegram/NotificationId.h"
 #include "td/telegram/NotificationType.h"
+#include "td/telegram/Photo.h"
 #include "td/telegram/td_api.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
-#include "td/actor/Timeout.h"
+#include "td/actor/MultiTimeout.h"
 
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/FlatHashSet.h"
 #include "td/utils/logging.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
 #include "td/utils/Time.h"
@@ -66,7 +67,7 @@ class NotificationManager final : public Actor {
   void load_group_force(NotificationGroupId group_id);
 
   void add_notification(NotificationGroupId group_id, NotificationGroupType group_type, DialogId dialog_id, int32 date,
-                        DialogId notification_settings_dialog_id, bool initial_is_silent, bool is_silent,
+                        DialogId notification_settings_dialog_id, bool disable_notification, int64 ringtone_id,
                         int32 min_delay_ms, NotificationId notification_id, unique_ptr<NotificationType> type,
                         const char *source);
 
@@ -106,8 +107,6 @@ class NotificationManager final : public Actor {
   void on_notification_default_delay_changed();
 
   void on_disable_contact_registered_notifications_changed();
-
-  void on_get_disable_contact_registered_notifications(bool is_disabled);
 
   void process_push_notification(string payload, Promise<Unit> &&user_promise);
 
@@ -160,8 +159,8 @@ class NotificationManager final : public Actor {
   struct PendingNotification {
     int32 date = 0;
     DialogId settings_dialog_id;
-    bool initial_is_silent = false;
-    bool is_silent = false;
+    bool disable_notification = false;
+    int64 ringtone_id = -1;
     NotificationId notification_id;
     unique_ptr<NotificationType> type;
 
@@ -169,7 +168,7 @@ class NotificationManager final : public Actor {
       return string_builder << "PendingNotification[" << pending_notification.notification_id << " of type "
                             << pending_notification.type << " sent at " << pending_notification.date
                             << " with settings from " << pending_notification.settings_dialog_id
-                            << ", is_silent = " << pending_notification.is_silent << "]";
+                            << ", ringtone_id = " << pending_notification.ringtone_id << "]";
     }
   };
 
@@ -272,7 +271,7 @@ class NotificationManager final : public Actor {
   void send_remove_group_update(const NotificationGroupKey &group_key, const NotificationGroup &group,
                                 vector<int32> &&removed_notification_ids);
 
-  void send_add_group_update(const NotificationGroupKey &group_key, const NotificationGroup &group);
+  void send_add_group_update(const NotificationGroupKey &group_key, const NotificationGroup &group, const char *source);
 
   int32 get_notification_delay_ms(DialogId dialog_id, const PendingNotification &notification,
                                   int32 min_delay_ms) const;
@@ -312,9 +311,9 @@ class NotificationManager final : public Actor {
 
   void add_message_push_notification(DialogId dialog_id, MessageId message_id, int64 random_id, UserId sender_user_id,
                                      DialogId sender_dialog_id, string sender_name, int32 date, bool is_from_scheduled,
-                                     bool contains_mention, bool initial_is_silent, bool is_silent, string loc_key,
-                                     string arg, Photo photo, Document document, NotificationId notification_id,
-                                     uint64 log_event_id, Promise<Unit> promise);
+                                     bool contains_mention, bool disable_notification, int64 ringtone_id,
+                                     string loc_key, string arg, Photo photo, Document document,
+                                     NotificationId notification_id, uint64 log_event_id, Promise<Unit> promise);
 
   void edit_message_push_notification(DialogId dialog_id, MessageId message_id, int32 edit_date, string loc_key,
                                       string arg, Photo photo, Document document, uint64 log_event_id,
@@ -335,6 +334,8 @@ class NotificationManager final : public Actor {
   void run_contact_registered_notifications_sync();
 
   void on_contact_registered_notifications_sync(bool is_disabled, Result<Unit> result);
+
+  void on_get_disable_contact_registered_notifications(bool is_disabled, Promise<Unit> &&promise);
 
   void save_announcement_ids();
 

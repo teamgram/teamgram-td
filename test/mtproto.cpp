@@ -29,7 +29,6 @@
 
 #include "td/actor/actor.h"
 #include "td/actor/ConcurrentScheduler.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/base64.h"
 #include "td/utils/BufferedFd.h"
@@ -39,6 +38,7 @@
 #include "td/utils/port/Clocks.h"
 #include "td/utils/port/IPAddress.h"
 #include "td/utils/port/SocketFd.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Random.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
@@ -47,9 +47,8 @@
 #include "td/utils/Time.h"
 
 TEST(Mtproto, GetHostByNameActor) {
-  td::ConcurrentScheduler sched;
   int threads_n = 1;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   int cnt = 1;
   td::vector<td::ActorOwn<td::GetHostByNameActor>> actors;
@@ -139,9 +138,8 @@ TEST(Time, parse_http_date) {
 }
 
 TEST(Mtproto, config) {
-  td::ConcurrentScheduler sched;
   int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   int cnt = 1;
   {
@@ -167,7 +165,7 @@ TEST(Mtproto, config) {
             }
           });
       cnt++;
-      func(std::move(promise), nullptr, is_test, -1).release();
+      func(std::move(promise), false, td::Slice(), is_test, -1).release();
     };
 
     run(td::get_simple_config_azure, false);
@@ -274,7 +272,6 @@ class Mtproto_ping final : public td::Test {
   using Test::Test;
   bool step() final {
     if (!is_inited_) {
-      sched_.init(0);
       sched_.create_actor_unsafe<TestPingActor>(0, "Pinger", get_default_ip_address(), &result_).release();
       sched_.start();
       is_inited_ = true;
@@ -293,7 +290,7 @@ class Mtproto_ping final : public td::Test {
 
  private:
   bool is_inited_ = false;
-  td::ConcurrentScheduler sched_;
+  td::ConcurrentScheduler sched_{0, 0};
   td::Status result_;
 };
 td::RegisterTest<Mtproto_ping> mtproto_ping("Mtproto_ping");
@@ -417,7 +414,6 @@ class Mtproto_handshake final : public td::Test {
   using Test::Test;
   bool step() final {
     if (!is_inited_) {
-      sched_.init(0);
       sched_.create_actor_unsafe<HandshakeTestActor>(0, "HandshakeTestActor", get_default_dc_id(), &result_).release();
       sched_.start();
       is_inited_ = true;
@@ -436,7 +432,7 @@ class Mtproto_handshake final : public td::Test {
 
  private:
   bool is_inited_ = false;
-  td::ConcurrentScheduler sched_;
+  td::ConcurrentScheduler sched_{0, 0};
   td::Status result_;
 };
 td::RegisterTest<Mtproto_handshake> mtproto_handshake("Mtproto_handshake");
@@ -471,7 +467,7 @@ class Socks5TestActor final : public td::Actor {
     if (r_socket.is_error()) {
       return promise.set_error(td::Status::Error(PSTRING() << "Failed to open socket: " << r_socket.error()));
     }
-    td::create_actor<td::Socks5>("socks5", r_socket.move_as_ok(), mtproto_ip_address, "", "",
+    td::create_actor<td::Socks5>("Socks5", r_socket.move_as_ok(), mtproto_ip_address, "", "",
                                  td::make_unique<Callback>(std::move(promise)), actor_shared(this))
         .release();
   }
@@ -485,9 +481,8 @@ class Socks5TestActor final : public td::Actor {
 
 TEST(Mtproto, socks5) {
   return;
-  td::ConcurrentScheduler sched;
   int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<Socks5TestActor>(0, "Socks5TestActor").release();
   sched.start();
@@ -641,7 +636,6 @@ class Mtproto_FastPing final : public td::Test {
   using Test::Test;
   bool step() final {
     if (!is_inited_) {
-      sched_.init(0);
       sched_.create_actor_unsafe<FastPingTestActor>(0, "FastPingTestActor", &result_).release();
       sched_.start();
       is_inited_ = true;
@@ -660,7 +654,7 @@ class Mtproto_FastPing final : public td::Test {
 
  private:
   bool is_inited_ = false;
-  td::ConcurrentScheduler sched_;
+  td::ConcurrentScheduler sched_{0, 0};
   td::Status result_;
 };
 td::RegisterTest<Mtproto_FastPing> mtproto_fastping("Mtproto_FastPing");
@@ -677,9 +671,8 @@ TEST(Mtproto, Grease) {
 }
 
 TEST(Mtproto, TlsTransport) {
-  td::ConcurrentScheduler sched;
   int threads_n = 1;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
   {
     auto guard = sched.get_main_guard();
     class RunTest final : public td::Actor {

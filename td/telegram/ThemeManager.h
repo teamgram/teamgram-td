@@ -12,9 +12,9 @@
 #include "td/telegram/telegram_api.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 
 namespace td {
@@ -28,6 +28,9 @@ class ThemeManager final : public Actor {
   void init();
 
   void on_update_theme(telegram_api::object_ptr<telegram_api::theme> &&theme, Promise<Unit> &&promise);
+
+  static string get_theme_parameters_json_string(const td_api::object_ptr<td_api::themeParameters> &theme,
+                                                 bool for_web_view);
 
   void get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const;
 

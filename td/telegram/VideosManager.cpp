@@ -8,10 +8,14 @@
 
 #include "td/telegram/AuthManager.h"
 #include "td/telegram/files/FileManager.h"
+#include "td/telegram/Global.h"
+#include "td/telegram/PhotoFormat.h"
 #include "td/telegram/secret_api.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
+
+#include "td/actor/actor.h"
 
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
@@ -22,10 +26,14 @@ namespace td {
 VideosManager::VideosManager(Td *td) : td_(td) {
 }
 
+VideosManager::~VideosManager() {
+  Scheduler::instance()->destroy_on_scheduler(G()->get_gc_scheduler_id(), videos_);
+}
+
 int32 VideosManager::get_video_duration(FileId file_id) const {
-  auto it = videos_.find(file_id);
-  CHECK(it != videos_.end());
-  return it->second->duration;
+  auto video = get_video(file_id);
+  CHECK(video != nullptr);
+  return video->duration;
 }
 
 tl_object_ptr<td_api::video> VideosManager::get_video_object(FileId file_id) const {
@@ -33,9 +41,7 @@ tl_object_ptr<td_api::video> VideosManager::get_video_object(FileId file_id) con
     return nullptr;
   }
 
-  auto it = videos_.find(file_id);
-  CHECK(it != videos_.end());
-  auto video = it->second.get();
+  auto video = get_video(file_id);
   CHECK(video != nullptr);
   auto thumbnail = video->animated_thumbnail.file_id.is_valid()
                        ? get_thumbnail_object(td_->file_manager_.get(), video->animated_thumbnail, PhotoFormat::Mpeg4)
@@ -102,13 +108,7 @@ FileId VideosManager::on_get_video(unique_ptr<Video> new_video, bool replace) {
 }
 
 const VideosManager::Video *VideosManager::get_video(FileId file_id) const {
-  auto video = videos_.find(file_id);
-  if (video == videos_.end()) {
-    return nullptr;
-  }
-
-  CHECK(video->second->file_id == file_id);
-  return video->second.get();
+  return videos_.get_pointer(file_id);
 }
 
 FileId VideosManager::get_video_thumbnail_file_id(FileId file_id) const {
@@ -142,7 +142,7 @@ FileId VideosManager::dup_video(FileId new_id, FileId old_id) {
   return new_id;
 }
 
-void VideosManager::merge_videos(FileId new_id, FileId old_id, bool can_delete_old) {
+void VideosManager::merge_videos(FileId new_id, FileId old_id) {
   CHECK(old_id.is_valid() && new_id.is_valid());
   CHECK(new_id != old_id);
 
@@ -150,19 +150,10 @@ void VideosManager::merge_videos(FileId new_id, FileId old_id, bool can_delete_o
   const Video *old_ = get_video(old_id);
   CHECK(old_ != nullptr);
 
-  auto new_it = videos_.find(new_id);
-  if (new_it == videos_.end()) {
-    auto &old = videos_[old_id];
-    if (!can_delete_old) {
-      dup_video(new_id, old_id);
-    } else {
-      old->file_id = new_id;
-      videos_.emplace(new_id, std::move(old));
-    }
+  const auto *new_ = get_video(new_id);
+  if (new_ == nullptr) {
+    dup_video(new_id, old_id);
   } else {
-    Video *new_ = new_it->second.get();
-    CHECK(new_ != nullptr);
-
     if (!old_->mime_type.empty() && old_->mime_type != new_->mime_type) {
       LOG(INFO) << "Video has changed: mime_type = (" << old_->mime_type << ", " << new_->mime_type << ")";
     }
@@ -172,9 +163,6 @@ void VideosManager::merge_videos(FileId new_id, FileId old_id, bool can_delete_o
     }
   }
   LOG_STATUS(td_->file_manager_->merge(new_id, old_id));
-  if (can_delete_old) {
-    videos_.erase(old_id);
-  }
 }
 
 void VideosManager::create_video(FileId file_id, string minithumbnail, PhotoSize thumbnail,
@@ -200,29 +188,35 @@ void VideosManager::create_video(FileId file_id, string minithumbnail, PhotoSize
 
 SecretInputMedia VideosManager::get_secret_input_media(FileId video_file_id,
                                                        tl_object_ptr<telegram_api::InputEncryptedFile> input_file,
-                                                       const string &caption, BufferSlice thumbnail) const {
+                                                       const string &caption, BufferSlice thumbnail,
+                                                       int32 layer) const {
   const Video *video = get_video(video_file_id);
   CHECK(video != nullptr);
   auto file_view = td_->file_manager_->get_file_view(video_file_id);
-  auto &encryption_key = file_view.encryption_key();
-  if (!file_view.is_encrypted_secret() || encryption_key.empty()) {
+  if (!file_view.is_encrypted_secret() || file_view.encryption_key().empty()) {
     return SecretInputMedia{};
   }
   if (file_view.has_remote_location()) {
     input_file = file_view.main_remote_location().as_input_encrypted_file();
   }
   if (!input_file) {
-    return SecretInputMedia{};
+    return {};
   }
   if (video->thumbnail.file_id.is_valid() && thumbnail.empty()) {
     return {};
   }
-  return SecretInputMedia{
-      std::move(input_file),
-      make_tl_object<secret_api::decryptedMessageMediaVideo>(
-          std::move(thumbnail), video->thumbnail.dimensions.width, video->thumbnail.dimensions.height, video->duration,
-          video->mime_type, video->dimensions.width, video->dimensions.height, narrow_cast<int32>(file_view.size()),
-          BufferSlice(encryption_key.key_slice()), BufferSlice(encryption_key.iv_slice()), caption)};
+  vector<tl_object_ptr<secret_api::DocumentAttribute>> attributes;
+  attributes.emplace_back(make_tl_object<secret_api::documentAttributeVideo>(video->duration, video->dimensions.width,
+                                                                             video->dimensions.height));
+
+  return {std::move(input_file),
+          std::move(thumbnail),
+          video->thumbnail.dimensions,
+          video->mime_type,
+          file_view,
+          std::move(attributes),
+          caption,
+          layer};
 }
 
 tl_object_ptr<telegram_api::InputMedia> VideosManager::get_input_media(

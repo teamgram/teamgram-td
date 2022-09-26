@@ -24,6 +24,9 @@
 #include "td/utils/port/RwMutex.h"
 #include "td/utils/port/thread.h"
 #include "td/utils/Slice.h"
+#include "td/utils/SliceBuilder.h"
+#include "td/utils/StringBuilder.h"
+#include "td/utils/utf8.h"
 
 #include <algorithm>
 #include <atomic>
@@ -95,8 +98,7 @@ class ClientManager::Impl final {
         CHECK(concurrent_scheduler_ == nullptr);
         CHECK(options_.net_query_stats == nullptr);
         options_.net_query_stats = std::make_shared<NetQueryStats>();
-        concurrent_scheduler_ = make_unique<ConcurrentScheduler>();
-        concurrent_scheduler_->init(0);
+        concurrent_scheduler_ = make_unique<ConcurrentScheduler>(0, 0);
         concurrent_scheduler_->start();
       }
       tds_[client_id] =
@@ -246,8 +248,8 @@ class MultiTd final : public Actor {
     auto old_context = set_context(context);
     auto old_tag = set_tag(to_string(td_id));
     td = create_actor<Td>("Td", std::move(callback), options_);
-    set_context(old_context);
-    set_tag(old_tag);
+    set_context(std::move(old_context));
+    set_tag(std::move(old_tag));
   }
 
   void send(ClientManager::ClientId client_id, ClientManager::RequestId request_id,
@@ -351,8 +353,7 @@ class MultiImpl {
   static constexpr int32 ADDITIONAL_THREAD_COUNT = 3;
 
   explicit MultiImpl(std::shared_ptr<NetQueryStats> net_query_stats) {
-    concurrent_scheduler_ = std::make_shared<ConcurrentScheduler>();
-    concurrent_scheduler_->init(ADDITIONAL_THREAD_COUNT);
+    concurrent_scheduler_ = std::make_shared<ConcurrentScheduler>(ADDITIONAL_THREAD_COUNT, 0);
     concurrent_scheduler_->start();
 
     {
@@ -420,6 +421,7 @@ class MultiImpl {
   static std::atomic<uint32> current_id_;
 };
 
+constexpr int32 MultiImpl::ADDITIONAL_THREAD_COUNT;
 std::atomic<uint32> MultiImpl::current_id_{1};
 
 class MultiImplPool {
@@ -679,7 +681,18 @@ static std::atomic<ClientManager::LogMessageCallbackPtr> log_message_callback;
 static void log_message_callback_wrapper(int verbosity_level, CSlice message) {
   auto callback = log_message_callback.load(std::memory_order_relaxed);
   if (callback != nullptr) {
-    callback(verbosity_level, message.c_str());
+    if (check_utf8(message)) {
+      callback(verbosity_level, message.c_str());
+    } else {
+      size_t pos = 0;
+      while (1 <= message[pos] && message[pos] <= 126) {
+        pos++;
+      }
+      CHECK(pos + 1 < message.size());
+      auto utf8_message = PSTRING() << message.substr(0, pos)
+                                    << url_encode(message.substr(pos, message.size() - pos - 1)) << '\n';
+      callback(verbosity_level, utf8_message.c_str());
+    }
   }
 }
 

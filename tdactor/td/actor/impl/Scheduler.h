@@ -15,6 +15,7 @@
 #include "td/utils/ObjectPool.h"
 #include "td/utils/port/detail/PollableFd.h"
 #include "td/utils/port/PollFlags.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Time.h"
 
@@ -161,13 +162,29 @@ void Scheduler::flush_mailbox(ActorInfo *actor_info, const RunFuncT &run_func, c
   mailbox.erase(mailbox.begin(), mailbox.begin() + i);
 }
 
-inline void Scheduler::send_to_scheduler(int32 sched_id, const ActorId<> &actor_id, Event &&event) {
+inline void Scheduler::send_to_scheduler(int32 sched_id, const ActorId<Actor> &actor_id, Event &&event) {
   if (sched_id == sched_id_) {
     ActorInfo *actor_info = actor_id.get_actor_info();
     pending_events_[actor_info].push_back(std::move(event));
   } else {
     send_to_other_scheduler(sched_id, actor_id, std::move(event));
   }
+}
+
+template <class T>
+void Scheduler::destroy_on_scheduler(int32 sched_id, T &value) {
+  if (!value.empty()) {
+    destroy_on_scheduler_impl(sched_id, PromiseCreator::lambda([value = std::move(value)](Unit) {
+                                // destroy value
+                              }));
+  }
+}
+
+template <class... ArgsT>
+void Scheduler::destroy_on_scheduler(int32 sched_id, ArgsT &...values) {
+  destroy_on_scheduler_impl(sched_id, PromiseCreator::lambda([values = std::make_tuple(std::move(values)...)](Unit) {
+                              // destroy values
+                            }));
 }
 
 inline void Scheduler::before_tail_send(const ActorId<> &actor_id) {

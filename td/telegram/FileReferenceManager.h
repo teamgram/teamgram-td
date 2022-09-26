@@ -18,14 +18,15 @@
 #include "td/telegram/UserId.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/logging.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/Variant.h"
+#include "td/utils/WaitFreeVector.h"
 
 namespace td {
 
@@ -35,6 +36,13 @@ extern int VERBOSITY_NAME(file_references);
 
 class FileReferenceManager final : public Actor {
  public:
+  explicit FileReferenceManager(ActorShared<> parent);
+  FileReferenceManager(const FileReferenceManager &) = delete;
+  FileReferenceManager &operator=(const FileReferenceManager &) = delete;
+  FileReferenceManager(FileReferenceManager &&) = delete;
+  FileReferenceManager &operator=(FileReferenceManager &&) = delete;
+  ~FileReferenceManager() final;
+
   static bool is_file_reference_error(const Status &error);
   static size_t get_file_reference_error_pos(const Status &error);
 
@@ -52,6 +60,9 @@ class FileReferenceManager final : public Actor {
   FileSourceId create_chat_full_file_source(ChatId chat_id);
   FileSourceId create_channel_full_file_source(ChannelId channel_id);
   FileSourceId create_app_config_file_source();
+  FileSourceId create_saved_ringtones_file_source();
+  FileSourceId create_user_full_file_source(UserId user_id);
+  FileSourceId create_attach_menu_bot_file_source(UserId user_id);
 
   using NodeId = FileId;
   void repair_file_reference(NodeId node_id, Promise<> promise);
@@ -144,17 +155,29 @@ class FileReferenceManager final : public Actor {
   struct FileSourceAppConfig {
     // empty
   };
+  struct FileSourceSavedRingtones {
+    // empty
+  };
+  struct FileSourceUserFull {
+    UserId user_id;
+  };
+  struct FileSourceAttachMenuBot {
+    UserId user_id;
+  };
 
   // append only
   using FileSource =
       Variant<FileSourceMessage, FileSourceUserPhoto, FileSourceChatPhoto, FileSourceChannelPhoto, FileSourceWallpapers,
               FileSourceWebPage, FileSourceSavedAnimations, FileSourceRecentStickers, FileSourceFavoriteStickers,
-              FileSourceBackground, FileSourceChatFull, FileSourceChannelFull, FileSourceAppConfig>;
-  vector<FileSource> file_sources_;
+              FileSourceBackground, FileSourceChatFull, FileSourceChannelFull, FileSourceAppConfig,
+              FileSourceSavedRingtones, FileSourceUserFull, FileSourceAttachMenuBot>;
+  WaitFreeVector<FileSource> file_sources_;
 
   int64 query_generation_{0};
 
   FlatHashMap<NodeId, Node, FileIdHash> nodes_;
+
+  ActorShared<> parent_;
 
   void run_node(NodeId node);
   void send_query(Destination dest, FileSourceId file_source_id);
@@ -164,6 +187,8 @@ class FileReferenceManager final : public Actor {
   FileSourceId add_file_source_id(T source, Slice source_str);
 
   FileSourceId get_current_file_source_id() const;
+
+  void tear_down() final;
 };
 
 }  // namespace td

@@ -25,10 +25,10 @@ using namespace CxCli;
 /// <summary>
 /// A type of callback function that will be called when a message is added to the internal TDLib log.
 /// </summary>
-/// <param name="verbosityLevel">Log verbosity level with which the message was added (-1 - 1024).
+/// <param name="verbosityLevel">Log verbosity level with which the message was added from -1 up to 1024.
 /// If 0, then TDLib will crash as soon as the callback returns.
 /// None of the TDLib methods can be called from the callback.</param>
-/// <param name="message">Null-terminated string with the message added to the log.</param>
+/// <param name="message">The message added to the log.</param>
 public delegate void LogMessageCallback(int verbosityLevel, String^ message);
 #endif
 
@@ -77,7 +77,7 @@ public:
 
   /// <summary>
   /// Launches a cycle which will fetch all results of queries to TDLib and incoming updates from TDLib.
-  /// Must be called once on a separate dedicated thread, on which all updates and query results from all Clients will be handled.
+  /// Must be called once on a separate dedicated thread on which all updates and query results from all Clients will be handled.
   /// Never returns.
   /// </summary>
   static void Run() {

@@ -717,14 +717,17 @@ Status SessionConnection::on_quick_ack(uint64 quick_ack_token) {
 
 void SessionConnection::on_read(size_t size) {
   last_read_at_ = Time::now_cached();
+  last_read_size_ += size;
 }
 
 SessionConnection::SessionConnection(Mode mode, unique_ptr<RawConnection> raw_connection, AuthData *auth_data)
-    : raw_connection_(std::move(raw_connection)), auth_data_(auth_data) {
+    : random_delay_(Random::fast(0, 5000000) * 1e-6)
+    , state_(Init)
+    , mode_(mode)
+    , created_at_(Time::now())
+    , raw_connection_(std::move(raw_connection))
+    , auth_data_(auth_data) {
   CHECK(raw_connection_);
-  state_ = Init;
-  mode_ = mode;
-  created_at_ = Time::now();
 }
 
 PollableFdInfo &SessionConnection::get_poll_info() {
@@ -765,8 +768,9 @@ void SessionConnection::do_close(Status status) {
 
 void SessionConnection::send_crypto(const Storer &storer, uint64 quick_ack_token) {
   CHECK(state_ != Closed);
-  raw_connection_->send_crypto(storer, auth_data_->get_session_id(), auth_data_->get_server_salt(Time::now_cached()),
-                               auth_data_->get_auth_key(), quick_ack_token);
+  last_write_size_ += raw_connection_->send_crypto(storer, auth_data_->get_session_id(),
+                                                   auth_data_->get_server_salt(Time::now_cached()),
+                                                   auth_data_->get_auth_key(), quick_ack_token);
 }
 
 Result<uint64> SessionConnection::send_query(BufferSlice buffer, bool gzip_flag, int64 message_id,
@@ -836,6 +840,12 @@ std::pair<uint64, BufferSlice> SessionConnection::encrypted_bind(int64 perm_key,
   auto packet = BufferWriter{Transport::write(query_storer, main_auth_key, &info), 0, 0};
   Transport::write(query_storer, main_auth_key, &info, packet.as_slice());
   return std::make_pair(query.message_id, packet.as_buffer_slice());
+}
+
+void SessionConnection::force_ack() {
+  if (!to_ack_.empty()) {
+    send_before(Time::now_cached());
+  }
 }
 
 void SessionConnection::send_ack(uint64 message_id) {
@@ -963,10 +973,11 @@ void SessionConnection::flush_packet() {
   {
     // LOG(ERROR) << (auth_data_->get_header().empty() ? '-' : '+');
     uint64 parent_message_id = 0;
-    auto storer = PacketStorer<CryptoImpl>(
-        queries, auth_data_->get_header(), std::move(to_ack), ping_id, ping_disconnect_delay() + 2, max_delay,
-        max_after, max_wait, future_salt_n, to_get_state_info, to_resend_answer, to_cancel_answer, destroy_auth_key,
-        auth_data_, &container_id, &get_state_info_id, &resend_answer_id, &ping_message_id, &parent_message_id);
+    auto storer = PacketStorer<CryptoImpl>(queries, auth_data_->get_header(), std::move(to_ack), ping_id,
+                                           static_cast<int>(ping_disconnect_delay() + 2.0), max_delay, max_after,
+                                           max_wait, future_salt_n, to_get_state_info, to_resend_answer,
+                                           to_cancel_answer, destroy_auth_key, auth_data_, &container_id,
+                                           &get_state_info_id, &resend_answer_id, &ping_message_id, &parent_message_id);
 
     auto quick_ack_token = use_quick_ack ? parent_message_id : 0;
     send_crypto(storer, quick_ack_token);
@@ -1026,7 +1037,18 @@ Status SessionConnection::do_flush() {
     return Status::Error("No auth key");
   }
 
-  TRY_STATUS(raw_connection_->flush(auth_data_->get_auth_key(), *this));
+  last_read_size_ = 0;
+  last_write_size_ = 0;
+  auto start_time = Time::now();
+  auto result = raw_connection_->flush(auth_data_->get_auth_key(), *this);
+  auto elapsed_time = Time::now() - start_time;
+  if (elapsed_time >= 0.1) {
+    LOG(ERROR) << "RawConnection::flush took " << elapsed_time << " seconds, written " << last_write_size_
+               << " bytes, read " << last_read_size_ << " bytes and returned " << result;
+  }
+  if (result.is_error()) {
+    return result;
+  }
 
   if (last_pong_at_ + ping_disconnect_delay() < Time::now_cached()) {
     auto stats_callback = raw_connection_->stats_callback();

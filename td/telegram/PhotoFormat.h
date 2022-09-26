@@ -4,17 +4,12 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
-#include "td/utils/GitInfo.h"
+#pragma once
 
-#include "auto/git_info.h"
+#include "td/utils/common.h"
 
 namespace td {
 
-CSlice GitInfo::commit() {
-  return GIT_COMMIT;
-}
-bool GitInfo::is_dirty() {
-  return GIT_DIRTY;
-}
+enum class PhotoFormat : int32 { Jpeg, Png, Webp, Gif, Tgs, Mpeg4, Webm };
 
 }  // namespace td

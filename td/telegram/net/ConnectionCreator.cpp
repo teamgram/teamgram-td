@@ -7,7 +7,6 @@
 #include "td/telegram/net/ConnectionCreator.h"
 
 #include "td/telegram/ConfigManager.h"
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/MessagesManager.h"
@@ -179,8 +178,8 @@ void ConnectionCreator::add_proxy(int32 old_proxy_id, string server, int32 port,
       proxy_id = max_proxy_id_++;
       G()->td_db()->get_binlog_pmc()->set("proxy_max_id", to_string(max_proxy_id_));
     }
-    CHECK(proxies_.count(proxy_id) == 0);
-    proxies_.emplace(proxy_id, std::move(new_proxy));
+    bool is_inserted = proxies_.emplace(proxy_id, std::move(new_proxy)).second;
+    CHECK(is_inserted);
     G()->td_db()->get_binlog_pmc()->set(get_proxy_database_key(proxy_id),
                                         log_event_store(proxies_[proxy_id]).as_slice().str());
     return proxy_id;
@@ -234,7 +233,7 @@ void ConnectionCreator::get_proxy_link(int32 proxy_id, Promise<string> promise) 
   }
 
   auto &proxy = it->second;
-  string url = G()->shared_config().get_option_string("t_me_url", "https://t.me/");
+  string url = G()->get_option_string("t_me_url", "https://t.me/");
   bool is_socks = false;
   switch (proxy.type()) {
     case Proxy::Type::Socks5:
@@ -269,7 +268,7 @@ void ConnectionCreator::get_proxy_link(int32 proxy_id, Promise<string> promise) 
 }
 
 ActorId<GetHostByNameActor> ConnectionCreator::get_dns_resolver() {
-  if (G()->shared_config().get_option_boolean("expect_blocking", true)) {
+  if (G()->get_option_boolean("expect_blocking", true)) {
     if (block_get_host_by_name_actor_.empty()) {
       VLOG(connections) << "Init block bypass DNS resolver";
       GetHostByNameActor::Options options;
@@ -297,7 +296,7 @@ void ConnectionCreator::ping_proxy(int32 proxy_id, Promise<double> promise) {
   CHECK(!close_flag_);
   if (proxy_id == 0) {
     auto main_dc_id = G()->net_query_dispatcher().get_main_dc_id();
-    bool prefer_ipv6 = G()->shared_config().get_option_boolean("prefer_ipv6");
+    bool prefer_ipv6 = G()->get_option_boolean("prefer_ipv6");
     auto infos = dc_options_set_.find_all_connections(main_dc_id, false, false, prefer_ipv6, false);
     if (infos.empty()) {
       return promise.set_error(Status::Error(400, "Can't find valid DC address"));
@@ -344,7 +343,7 @@ void ConnectionCreator::ping_proxy(int32 proxy_id, Promise<double> promise) {
     return promise.set_error(Status::Error(400, "Unknown proxy identifier"));
   }
   const Proxy &proxy = it->second;
-  bool prefer_ipv6 = G()->shared_config().get_option_boolean("prefer_ipv6");
+  bool prefer_ipv6 = G()->get_option_boolean("prefer_ipv6");
   send_closure(get_dns_resolver(), &GetHostByNameActor::run, proxy.server().str(), proxy.port(), prefer_ipv6,
                PromiseCreator::lambda([actor_id = actor_id(this), promise = std::move(promise),
                                        proxy_id](Result<IPAddress> result) mutable {
@@ -413,14 +412,14 @@ void ConnectionCreator::ping_proxy_buffered_socket_fd(IPAddress ip_address, Buff
 void ConnectionCreator::set_active_proxy_id(int32 proxy_id, bool from_binlog) {
   active_proxy_id_ = proxy_id;
   if (proxy_id == 0) {
-    G()->shared_config().set_option_empty("enabled_proxy_id");
+    G()->set_option_empty("enabled_proxy_id");
   } else {
-    G()->shared_config().set_option_integer("enabled_proxy_id", proxy_id);
+    G()->set_option_integer("enabled_proxy_id", proxy_id);
   }
   if (!from_binlog) {
     if (proxy_id == 0) {
       G()->td_db()->get_binlog_pmc()->erase("proxy_active_id");
-      send_closure(G()->config_manager(), &ConfigManager::request_config);
+      send_closure(G()->config_manager(), &ConfigManager::request_config, false);
     } else {
       G()->td_db()->get_binlog_pmc()->set("proxy_active_id", to_string(proxy_id));
     }
@@ -701,8 +700,7 @@ Result<mtproto::TransportType> ConnectionCreator::get_transport_type(const Proxy
 Result<SocketFd> ConnectionCreator::find_connection(const Proxy &proxy, const IPAddress &proxy_ip_address, DcId dc_id,
                                                     bool allow_media_only, FindConnectionExtra &extra) {
   extra.debug_str = PSTRING() << "Failed to find valid IP address for " << dc_id;
-  bool prefer_ipv6 =
-      G()->shared_config().get_option_boolean("prefer_ipv6") || (proxy.use_proxy() && proxy_ip_address.is_ipv6());
+  bool prefer_ipv6 = G()->get_option_boolean("prefer_ipv6") || (proxy.use_proxy() && proxy_ip_address.is_ipv6());
   bool only_http = proxy.use_http_caching_proxy();
 #if TD_DARWIN_WATCH_OS
   only_http = true;
@@ -1272,10 +1270,10 @@ DcOptions ConnectionCreator::get_default_dc_options(bool is_test) {
 }
 
 void ConnectionCreator::loop() {
-  if (!is_inited_) {
+  if (G()->close_flag()) {
     return;
   }
-  if (G()->close_flag()) {
+  if (!is_inited_) {
     return;
   }
   if (!network_flag_) {
@@ -1288,7 +1286,7 @@ void ConnectionCreator::loop() {
       if (resolve_proxy_query_token_ == 0) {
         resolve_proxy_query_token_ = next_token();
         const Proxy &proxy = proxies_[active_proxy_id_];
-        bool prefer_ipv6 = G()->shared_config().get_option_boolean("prefer_ipv6");
+        bool prefer_ipv6 = G()->get_option_boolean("prefer_ipv6");
         VLOG(connections) << "Resolve IP address " << resolve_proxy_query_token_ << " of " << proxy.server();
         send_closure(
             get_dns_resolver(), &GetHostByNameActor::run, proxy.server().str(), proxy.port(), prefer_ipv6,

@@ -106,8 +106,7 @@ class Manager final : public td::Actor {
 };
 
 static void test_workers(int threads_n, int workers_n, int queries_n, int query_size) {
-  td::ConcurrentScheduler sched;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   td::vector<td::ActorId<PowerWorker>> workers;
   for (int i = 0; i < workers_n; i++) {
@@ -138,13 +137,13 @@ TEST(Actors, workers_big_query_nine_threads) {
 }
 
 TEST(Actors, workers_small_query_one_thread) {
-  test_workers(0, 10, 1000000, 1);
+  test_workers(0, 10, 100000, 1);
 }
 
 TEST(Actors, workers_small_query_two_threads) {
-  test_workers(2, 10, 1000000, 1);
+  test_workers(2, 10, 100000, 1);
 }
 
 TEST(Actors, workers_small_query_nine_threads) {
-  test_workers(9, 10, 1000000, 1);
+  test_workers(9, 10, 10000, 1);
 }

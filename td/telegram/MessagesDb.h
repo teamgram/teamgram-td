@@ -13,10 +13,9 @@
 #include "td/telegram/NotificationId.h"
 #include "td/telegram/ServerMessageId.h"
 
-#include "td/actor/PromiseFuture.h"
-
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 
 #include <memory>
@@ -206,6 +205,6 @@ std::shared_ptr<MessagesDbSyncSafeInterface> create_messages_db_sync(
     std::shared_ptr<SqliteConnectionSafe> sqlite_connection);
 
 std::shared_ptr<MessagesDbAsyncInterface> create_messages_db_async(std::shared_ptr<MessagesDbSyncSafeInterface> sync_db,
-                                                                   int32 scheduler_id);
+                                                                   int32 scheduler_id = -1);
 
 }  // namespace td

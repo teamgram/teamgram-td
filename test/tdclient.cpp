@@ -26,6 +26,7 @@
 #include "td/utils/port/path.h"
 #include "td/utils/port/sleep.h"
 #include "td/utils/port/thread.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Random.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
@@ -210,11 +211,15 @@ class DoAuthentication final : public TestClinetTask {
     start_flag_ = true;
     td::tl_object_ptr<td::td_api::Function> function;
     switch (authorization_state->get_id()) {
-      case td::td_api::authorizationStateWaitEncryptionKey::ID:
-        function = td::make_tl_object<td::td_api::checkDatabaseEncryptionKey>();
-        break;
       case td::td_api::authorizationStateWaitPhoneNumber::ID:
         function = td::make_tl_object<td::td_api::setAuthenticationPhoneNumber>(phone_, nullptr);
+        break;
+      case td::td_api::authorizationStateWaitEmailAddress::ID:
+        function = td::make_tl_object<td::td_api::setAuthenticationEmailAddress>("alice_test@gmail.com");
+        break;
+      case td::td_api::authorizationStateWaitEmailCode::ID:
+        function = td::make_tl_object<td::td_api::checkAuthenticationEmailCode>(
+            td::make_tl_object<td::td_api::emailAddressAuthenticationCode>(code_));
         break;
       case td::td_api::authorizationStateWaitCode::ID:
         function = td::make_tl_object<td::td_api::checkAuthenticationCode>(code_);
@@ -223,19 +228,18 @@ class DoAuthentication final : public TestClinetTask {
         function = td::make_tl_object<td::td_api::registerUser>(name_, "");
         break;
       case td::td_api::authorizationStateWaitTdlibParameters::ID: {
-        auto parameters = td::td_api::make_object<td::td_api::tdlibParameters>();
-        parameters->use_test_dc_ = true;
-        parameters->database_directory_ = name_ + TD_DIR_SLASH;
-        parameters->use_message_database_ = true;
-        parameters->use_secret_chats_ = true;
-        parameters->api_id_ = 94575;
-        parameters->api_hash_ = "a3406de8d171bb422bb6ddf3bbd800e2";
-        parameters->system_language_code_ = "en";
-        parameters->device_model_ = "Desktop";
-        parameters->application_version_ = "tdclient-test";
-        parameters->ignore_file_names_ = false;
-        parameters->enable_storage_optimizer_ = true;
-        function = td::td_api::make_object<td::td_api::setTdlibParameters>(std::move(parameters));
+        auto request = td::td_api::make_object<td::td_api::setTdlibParameters>();
+        request->use_test_dc_ = true;
+        request->database_directory_ = name_ + TD_DIR_SLASH;
+        request->use_message_database_ = true;
+        request->use_secret_chats_ = true;
+        request->api_id_ = 94575;
+        request->api_hash_ = "a3406de8d171bb422bb6ddf3bbd800e2";
+        request->system_language_code_ = "en";
+        request->device_model_ = "Desktop";
+        request->application_version_ = "tdclient-test";
+        request->enable_storage_optimizer_ = true;
+        function = std::move(request);
         break;
       }
       case td::td_api::authorizationStateReady::ID:
@@ -691,12 +695,12 @@ class LoginTestActor final : public td::Actor {
     td::send_closure(alice_, &TestClient::add_listener,
                      td::make_unique<DoAuthentication>(
                          "alice", alice_phone_, "33333",
-                         td::PromiseCreator::event(self_closure(this, &LoginTestActor::start_up_fence_dec))));
+                         td::create_event_promise(self_closure(this, &LoginTestActor::start_up_fence_dec))));
 
     td::send_closure(bob_, &TestClient::add_listener,
                      td::make_unique<DoAuthentication>(
                          "bob", bob_phone_, "33333",
-                         td::PromiseCreator::event(self_closure(this, &LoginTestActor::start_up_fence_dec))));
+                         td::create_event_promise(self_closure(this, &LoginTestActor::start_up_fence_dec))));
   }
 
   int start_up_fence_ = 3;
@@ -722,18 +726,18 @@ class LoginTestActor final : public td::Actor {
         td::Promise<> promise_;
       };
       td::create_actor<WaitActor>("WaitActor", 2,
-                                  td::PromiseCreator::event(self_closure(this, &LoginTestActor::start_up_fence_dec)))
+                                  td::create_event_promise(self_closure(this, &LoginTestActor::start_up_fence_dec)))
           .release();
     }
   }
 
   void init() {
     td::send_closure(alice_, &TestClient::add_listener,
-                     td::make_unique<SetUsername>(alice_username_, td::PromiseCreator::event(self_closure(
+                     td::make_unique<SetUsername>(alice_username_, td::create_event_promise(self_closure(
                                                                        this, &LoginTestActor::init_fence_dec))));
     td::send_closure(bob_, &TestClient::add_listener,
-                     td::make_unique<SetUsername>(bob_username_, td::PromiseCreator::event(self_closure(
-                                                                     this, &LoginTestActor::init_fence_dec))));
+                     td::make_unique<SetUsername>(
+                         bob_username_, td::create_event_promise(self_closure(this, &LoginTestActor::init_fence_dec))));
   }
 
   int init_fence_ = 2;
@@ -757,10 +761,10 @@ class LoginTestActor final : public td::Actor {
 
     td::send_closure(bob_, &TestClient::add_listener,
                      td::make_unique<CheckTestA>(
-                         alice_tag, td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_a_fence))));
+                         alice_tag, td::create_event_promise(self_closure(this, &LoginTestActor::test_a_fence))));
     td::send_closure(alice_, &TestClient::add_listener,
                      td::make_unique<CheckTestA>(
-                         bob_tag, td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_a_fence))));
+                         bob_tag, td::create_event_promise(self_closure(this, &LoginTestActor::test_a_fence))));
 
     td::send_closure(alice_, &TestClient::add_listener, td::make_unique<TestA>(alice_tag, bob_username_));
     td::send_closure(bob_, &TestClient::add_listener, td::make_unique<TestA>(bob_tag, alice_username_));
@@ -791,7 +795,7 @@ class LoginTestActor final : public td::Actor {
 
     td::send_closure(
         bob_, &TestClient::add_listener,
-        td::make_unique<CheckTestA>(tag, td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_b_fence))));
+        td::make_unique<CheckTestA>(tag, td::create_event_promise(self_closure(this, &LoginTestActor::test_b_fence))));
     td::send_closure(alice_, &TestClient::add_listener, td::make_unique<TestSecretChat>(tag, bob_username_));
   }
 
@@ -802,7 +806,7 @@ class LoginTestActor final : public td::Actor {
     td::send_closure(
         bob_, &TestClient::add_listener,
         td::make_unique<CheckTestC>(alice_username_, tag,
-                                    td::PromiseCreator::event(self_closure(this, &LoginTestActor::test_c_fence))));
+                                    td::create_event_promise(self_closure(this, &LoginTestActor::test_c_fence))));
     td::send_closure(alice_, &TestClient::add_listener, td::make_unique<TestFileGenerated>(tag, bob_username_));
   }
 
@@ -817,9 +821,9 @@ class LoginTestActor final : public td::Actor {
 
   void finish() {
     td::send_closure(alice_, &TestClient::close,
-                     td::PromiseCreator::event(self_closure(this, &LoginTestActor::finish_fence)));
+                     td::create_event_promise(self_closure(this, &LoginTestActor::finish_fence)));
     td::send_closure(bob_, &TestClient::close,
-                     td::PromiseCreator::event(self_closure(this, &LoginTestActor::finish_fence)));
+                     td::create_event_promise(self_closure(this, &LoginTestActor::finish_fence)));
   }
 };
 
@@ -828,7 +832,6 @@ class Tdclient_login final : public td::Test {
   using Test::Test;
   bool step() final {
     if (!is_inited_) {
-      sched_.init(4);
       sched_.create_actor_unsafe<LoginTestActor>(0, "LoginTestActor", &result_).release();
       sched_.start();
       is_inited_ = true;
@@ -848,7 +851,7 @@ class Tdclient_login final : public td::Test {
 
  private:
   bool is_inited_ = false;
-  td::ConcurrentScheduler sched_;
+  td::ConcurrentScheduler sched_{4, 0};
   td::Status result_;
 };
 //RegisterTest<Tdclient_login> Tdclient_login("Tdclient_login");

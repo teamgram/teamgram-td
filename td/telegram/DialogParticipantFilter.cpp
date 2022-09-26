@@ -7,6 +7,7 @@
 #include "td/telegram/DialogParticipantFilter.h"
 
 #include "td/telegram/ContactsManager.h"
+#include "td/telegram/DialogId.h"
 #include "td/telegram/DialogParticipant.h"
 #include "td/telegram/Td.h"
 
@@ -34,7 +35,7 @@ StringBuilder &operator<<(StringBuilder &string_builder, const DialogParticipant
   }
 }
 
-DialogParticipantFilter::DialogParticipantFilter(const tl_object_ptr<td_api::ChatMembersFilter> &filter) {
+DialogParticipantFilter::DialogParticipantFilter(const td_api::object_ptr<td_api::ChatMembersFilter> &filter) {
   if (filter == nullptr) {
     type_ = Type::Members;
     return;

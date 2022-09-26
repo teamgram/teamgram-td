@@ -6,7 +6,6 @@
 //
 #include "td/telegram/StorageManager.h"
 
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/DialogId.h"
 #include "td/telegram/files/FileGcWorker.h"
 #include "td/telegram/files/FileStatsWorker.h"
@@ -135,10 +134,7 @@ void StorageManager::on_file_stats(Result<FileStats> r_file_stats, uint32 genera
     return;
   }
   if (r_file_stats.is_error()) {
-    auto promises = std::move(pending_storage_stats_);
-    for (auto &promise : promises) {
-      promise.set_error(r_file_stats.error().clone());
-    }
+    fail_promises(pending_storage_stats_, r_file_stats.move_as_error());
     return;
   }
 
@@ -191,7 +187,7 @@ int64 StorageManager::get_database_size() {
 
 int64 StorageManager::get_language_pack_database_size() {
   int64 size = 0;
-  auto path = G()->shared_config().get_option_string("language_pack_database_path");
+  auto path = G()->get_option_string("language_pack_database_path");
   if (!path.empty()) {
     SqliteDb::with_db_path(path, [&size](CSlice path) { size += get_file_size(path); });
   }
@@ -223,9 +219,7 @@ void StorageManager::on_gc_finished(int32 dialog_limit, Result<FileGcResult> r_f
     append(promises, std::move(pending_run_gc_[1]));
     pending_run_gc_[0].clear();
     pending_run_gc_[1].clear();
-    for (auto &promise : promises) {
-      promise.set_error(r_file_gc_result.error().clone());
-    }
+    fail_promises(promises, r_file_gc_result.move_as_error());
     return;
   }
 
@@ -288,11 +282,7 @@ void StorageManager::hangup_shared() {
 }
 
 void StorageManager::close_stats_worker() {
-  auto promises = std::move(pending_storage_stats_);
-  pending_storage_stats_.clear();
-  for (auto &promise : promises) {
-    promise.set_error(Global::request_aborted_error());
-  }
+  fail_promises(pending_storage_stats_, Global::request_aborted_error());
   stats_generation_++;
   stats_worker_.reset();
   stats_cancellation_token_source_.cancel();
@@ -303,9 +293,7 @@ void StorageManager::close_gc_worker() {
   append(promises, std::move(pending_run_gc_[1]));
   pending_run_gc_[0].clear();
   pending_run_gc_[1].clear();
-  for (auto &promise : promises) {
-    promise.set_error(Global::request_aborted_error());
-  }
+  fail_promises(promises, Global::request_aborted_error());
   gc_worker_.reset();
   gc_cancellation_token_source_.cancel();
 }
@@ -328,8 +316,7 @@ void StorageManager::save_last_gc_timestamp() {
 }
 
 void StorageManager::schedule_next_gc() {
-  if (!G()->shared_config().get_option_boolean("use_storage_optimizer") &&
-      !G()->parameters().enable_storage_optimizer) {
+  if (!G()->get_option_boolean("use_storage_optimizer") && !G()->parameters().enable_storage_optimizer) {
     next_gc_at_ = 0;
     cancel_timeout();
     LOG(INFO) << "No next file clean up is scheduled";

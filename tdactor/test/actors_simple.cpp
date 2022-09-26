@@ -16,6 +16,7 @@
 #include "td/utils/Observer.h"
 #include "td/utils/port/FileFd.h"
 #include "td/utils/port/thread.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
@@ -255,8 +256,7 @@ TEST(Actors, simple_migrate) {
   sb.clear();
   sb2.clear();
 
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(2);
+  td::ConcurrentScheduler scheduler(2, 0);
   auto pong = scheduler.create_actor_unsafe<Pong>(2, "Pong").release();
   scheduler.create_actor_unsafe<Ping>(1, "Ping", pong).release();
   scheduler.start();
@@ -299,8 +299,7 @@ class OpenClose final : public td::Actor {
 };
 
 TEST(Actors, open_close) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(2);
+  td::ConcurrentScheduler scheduler(2, 0);
   int cnt = 10000;  // TODO(perf) optimize
   scheduler.create_actor_unsafe<OpenClose>(1, "A", cnt).release();
   scheduler.create_actor_unsafe<OpenClose>(2, "B", cnt).release();
@@ -329,7 +328,7 @@ class MasterActor final : public MsgActor {
  public:
   void loop() final {
     alive_ = true;
-    slave = td::create_actor<Slave>("slave", static_cast<td::ActorId<MsgActor>>(actor_id(this)));
+    slave = td::create_actor<Slave>("Slave", static_cast<td::ActorId<MsgActor>>(actor_id(this)));
     stop();
   }
   td::ActorOwn<Slave> slave;
@@ -424,8 +423,7 @@ class LinkTokenMasterActor final : public td::Actor {
 };
 
 TEST(Actors, link_token) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   auto cnt = 100000;
   scheduler.create_actor_unsafe<LinkTokenMasterActor>(0, "A", cnt).release();
   scheduler.start();
@@ -484,8 +482,7 @@ class LaterMasterActor final : public td::Actor {
 
 TEST(Actors, later) {
   sb.clear();
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   scheduler.create_actor_unsafe<LaterMasterActor>(0, "A").release();
   scheduler.start();
   while (scheduler.run_main(10)) {
@@ -523,8 +520,7 @@ class MultiPromise1 final : public td::Actor {
 };
 
 TEST(Actors, MultiPromise) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   scheduler.create_actor_unsafe<MultiPromise1>(0, "A").release();
   scheduler.start();
   while (scheduler.run_main(10)) {
@@ -545,8 +541,7 @@ class FastPromise final : public td::Actor {
 };
 
 TEST(Actors, FastPromise) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   scheduler.create_actor_unsafe<FastPromise>(0, "A").release();
   scheduler.start();
   while (scheduler.run_main(10)) {
@@ -565,8 +560,7 @@ class StopInTeardown final : public td::Actor {
 };
 
 TEST(Actors, stop_in_teardown) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   scheduler.create_actor_unsafe<StopInTeardown>(0, "A").release();
   scheduler.start();
   while (scheduler.run_main(10)) {
@@ -600,8 +594,7 @@ class AlwaysWaitForMailbox final : public td::Actor {
 };
 
 TEST(Actors, always_wait_for_mailbox) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   scheduler.create_actor_unsafe<AlwaysWaitForMailbox>(0, "A").release();
   scheduler.start();
   while (scheduler.run_main(10)) {
@@ -611,8 +604,7 @@ TEST(Actors, always_wait_for_mailbox) {
 
 #if !TD_THREAD_UNSUPPORTED && !TD_EVENTFD_UNSUPPORTED
 TEST(Actors, send_from_other_threads) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(1);
+  td::ConcurrentScheduler scheduler(1, 0);
   int thread_n = 10;
   class Listener final : public td::Actor {
    public:
@@ -679,8 +671,7 @@ class MultiPromiseSendClosureLaterTest final : public td::Actor {
 };
 
 TEST(Actors, MultiPromiseSendClosureLater) {
-  td::ConcurrentScheduler scheduler;
-  scheduler.init(0);
+  td::ConcurrentScheduler scheduler(0, 0);
   scheduler.create_actor_unsafe<MultiPromiseSendClosureLaterTest>(0, "MultiPromiseSendClosureLaterTest").release();
   scheduler.start();
   while (scheduler.run_main(1)) {

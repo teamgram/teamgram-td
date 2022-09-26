@@ -24,7 +24,6 @@
 #include "td/mtproto/DhHandshake.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/ChangesProcessor.h"
@@ -32,6 +31,7 @@
 #include "td/utils/Container.h"
 #include "td/utils/format.h"
 #include "td/utils/port/Clocks.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
@@ -637,7 +637,7 @@ class SecretChatActor final : public NetQueryCallback {
   void outbound_loop(OutboundMessageState *state, uint64 state_id);
 
   // DiscardEncryption
-  void on_fatal_error(Status status);
+  void on_fatal_error(Status status, bool is_expected);
   void do_close_chat_impl(bool delete_history, bool is_already_discarded, uint64 log_event_id, Promise<Unit> &&promise);
   void on_closed(uint64 log_event_id, Promise<Unit> &&promise);
 

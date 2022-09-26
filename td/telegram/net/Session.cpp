@@ -6,7 +6,6 @@
 //
 #include "td/telegram/net/Session.h"
 
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/DhCache.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/net/DcAuthManager.h"
@@ -27,11 +26,14 @@
 #include "td/mtproto/SessionConnection.h"
 #include "td/mtproto/TransportType.h"
 
+#include "td/actor/PromiseFuture.h"
+
 #include "td/utils/algorithm.h"
 #include "td/utils/as.h"
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
+#include "td/utils/port/thread_local.h"
 #include "td/utils/Random.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
@@ -40,13 +42,60 @@
 #include "td/utils/Timer.h"
 #include "td/utils/tl_parsers.h"
 #include "td/utils/utf8.h"
+#include "td/utils/VectorQueue.h"
 
+#include <atomic>
+#include <memory>
 #include <tuple>
 #include <utility>
 
 namespace td {
 
 namespace detail {
+
+class SemaphoreActor final : public Actor {
+ public:
+  explicit SemaphoreActor(size_t capacity) : capacity_(capacity) {
+  }
+
+  void execute(Promise<Promise<Unit>> promise) {
+    if (capacity_ == 0) {
+      pending_.push(std::move(promise));
+    } else {
+      start(std::move(promise));
+    }
+  }
+
+ private:
+  size_t capacity_;
+  VectorQueue<Promise<Promise<Unit>>> pending_;
+
+  void finish(Result<Unit>) {
+    capacity_++;
+    if (!pending_.empty()) {
+      start(pending_.pop());
+    }
+  }
+
+  void start(Promise<Promise<Unit>> promise) {
+    CHECK(capacity_ > 0);
+    capacity_--;
+    promise.set_value(promise_send_closure(actor_id(this), &SemaphoreActor::finish));
+  }
+};
+
+struct Semaphore {
+  explicit Semaphore(size_t capacity) {
+    semaphore_ = create_actor<SemaphoreActor>("Semaphore", capacity).release();
+  }
+
+  void execute(Promise<Promise<Unit>> promise) {
+    send_closure(semaphore_, &SemaphoreActor::execute, std::move(promise));
+  }
+
+ private:
+  ActorId<SemaphoreActor> semaphore_;
+};
 
 class GenAuthKeyActor final : public Actor {
  public:
@@ -61,6 +110,22 @@ class GenAuthKeyActor final : public Actor {
       , connection_promise_(std::move(connection_promise))
       , handshake_promise_(std::move(handshake_promise))
       , callback_(std::move(callback)) {
+    if (actor_count_.fetch_add(1, std::memory_order_relaxed) == MIN_HIGH_LOAD_ACTOR_COUNT - 1) {
+      LOG(WARNING) << "Number of GenAuthKeyActor exceeded high-load threshold";
+    }
+  }
+  GenAuthKeyActor(const GenAuthKeyActor &) = delete;
+  GenAuthKeyActor &operator=(const GenAuthKeyActor &) = delete;
+  GenAuthKeyActor(GenAuthKeyActor &&) = delete;
+  GenAuthKeyActor &operator=(GenAuthKeyActor &&) = delete;
+  ~GenAuthKeyActor() final {
+    if (actor_count_.fetch_sub(1, std::memory_order_relaxed) == MIN_HIGH_LOAD_ACTOR_COUNT) {
+      LOG(WARNING) << "Number of GenAuthKeyActor became lower than high-load threshold";
+    }
+  }
+
+  static bool is_high_loaded() {
+    return actor_count_.load(std::memory_order_relaxed) >= MIN_HIGH_LOAD_ACTOR_COUNT;
   }
 
   void on_network(uint32 network_generation) {
@@ -80,11 +145,33 @@ class GenAuthKeyActor final : public Actor {
   CancellationTokenSource cancellation_token_source_;
 
   ActorOwn<mtproto::HandshakeActor> child_;
+  Promise<Unit> finish_promise_;
+
+  static constexpr size_t MIN_HIGH_LOAD_ACTOR_COUNT = 100;
+  static std::atomic<size_t> actor_count_;
+
+  static TD_THREAD_LOCAL Semaphore *semaphore_;
+  Semaphore &get_handshake_semaphore() {
+    auto old_context = set_context(std::make_shared<ActorContext>());
+    auto old_tag = set_tag(string());
+    init_thread_local<Semaphore>(semaphore_, 50);
+    set_context(std::move(old_context));
+    set_tag(std::move(old_tag));
+    return *semaphore_;
+  }
 
   void start_up() final {
     // Bug in Android clang and MSVC
     // std::tuple<Result<int>> b(std::forward_as_tuple(Result<int>()));
+    get_handshake_semaphore().execute(promise_send_closure(actor_id(this), &GenAuthKeyActor::do_start_up));
+  }
 
+  void do_start_up(Result<Promise<Unit>> r_finish_promise) {
+    if (r_finish_promise.is_error()) {
+      LOG(ERROR) << "Unexpected error: " << r_finish_promise.error();
+    } else {
+      finish_promise_ = r_finish_promise.move_as_ok();
+    }
     callback_->request_raw_connection(
         nullptr, PromiseCreator::cancellable_lambda(
                      cancellation_token_source_.get_cancellation_token(),
@@ -119,6 +206,9 @@ class GenAuthKeyActor final : public Actor {
         std::move(handshake_promise_));
   }
 };
+
+std::atomic<size_t> GenAuthKeyActor::actor_count_;
+TD_THREAD_LOCAL Semaphore *GenAuthKeyActor::semaphore_{};
 
 }  // namespace detail
 
@@ -159,6 +249,9 @@ Session::Session(unique_ptr<Callback> callback, std::shared_ptr<AuthDataShared> 
   auth_data_.set_future_salts(shared_auth_data_->get_future_salts(), Time::now());
   if (use_pfs && !tmp_auth_key.empty()) {
     auth_data_.set_tmp_auth_key(tmp_auth_key);
+    if (is_main_) {
+      registered_temp_auth_key_ = TempAuthKeyWatchdog::register_auth_key_id(auth_data_.get_tmp_auth_key().id());
+    }
     auth_data_.set_future_salts(server_salts, Time::now());
   }
   uint64 session_id = 0;
@@ -183,6 +276,11 @@ Session::Session(unique_ptr<Callback> callback, std::shared_ptr<AuthDataShared> 
   }
   last_activity_timestamp_ = Time::now();
   last_success_timestamp_ = Time::now() - 366 * 86400;
+  last_bind_success_timestamp_ = Time::now() - 366 * 86400;
+}
+
+bool Session::is_high_loaded() {
+  return detail::GenAuthKeyActor::is_high_loaded();
 }
 
 bool Session::can_destroy_auth_key() const {
@@ -287,7 +385,8 @@ void Session::on_bind_result(NetQueryPtr query) {
     if (status.code() == 400 && status.message() == "ENCRYPTED_MESSAGE_INVALID") {
       auto auth_key_age = G()->server_time() - auth_data_.get_main_auth_key().created_at();
       bool has_immunity = !G()->is_server_time_reliable() || auth_key_age < 60 ||
-                          (auth_key_age > 86400 && last_success_timestamp_ > Time::now() - 86400);
+                          (auth_key_age > 86400 &&
+                           (use_pfs_ ? last_bind_success_timestamp_ : last_success_timestamp_) > Time::now() - 86400);
       if (!use_pfs_) {
         if (has_immunity) {
           LOG(WARNING) << "Do not drop main key, because it was created too recently";
@@ -295,6 +394,7 @@ void Session::on_bind_result(NetQueryPtr query) {
           LOG(WARNING) << "Drop main key because check with temporary key failed";
           auth_data_.drop_main_auth_key();
           on_auth_key_updated();
+          G()->log_out("Main authorization key is invalid");
         }
       } else {
         if (has_immunity) {
@@ -317,6 +417,7 @@ void Session::on_bind_result(NetQueryPtr query) {
   if (status.is_ok()) {
     LOG(INFO) << "Bound temp auth key " << auth_data_.get_tmp_auth_key().id();
     auth_data_.on_bind();
+    last_bind_success_timestamp_ = Time::now();
     on_tmp_auth_key_updated();
   } else if (status.error().message() == "DispatchTtlError") {
     LOG(INFO) << "Resend bind auth key " << auth_data_.get_tmp_auth_key().id() << " request after DispatchTtlError";
@@ -509,10 +610,10 @@ void Session::on_closed(Status status) {
   raw_connection->close();
 
   if (status.is_error()) {
-    LOG(WARNING) << "Session with " << sent_queries_.size() << " pending requests was closed: " << status << " "
-                 << current_info_->connection_->get_name();
+    LOG(WARNING) << "Session connection with " << sent_queries_.size() << " pending requests was closed: " << status
+                 << ' ' << current_info_->connection_->get_name();
   } else {
-    LOG(INFO) << "Session with " << sent_queries_.size() << " pending requests was closed: " << status << " "
+    LOG(INFO) << "Session connection with " << sent_queries_.size() << " pending requests was closed: " << status << ' '
               << current_info_->connection_->get_name();
   }
 
@@ -539,6 +640,7 @@ void Session::on_closed(Status status) {
         LOG(WARNING) << "Invalidate main key";
         auth_data_.drop_main_auth_key();
         on_auth_key_updated();
+        G()->log_out("Main PFS authorization key is invalid");
       }
       yield();
     }
@@ -579,7 +681,9 @@ void Session::on_closed(Status status) {
 void Session::on_session_created(uint64 unique_id, uint64 first_id) {
   // TODO: use unique_id
   LOG(INFO) << "New session " << unique_id << " created with first message_id " << first_id;
-  last_success_timestamp_ = Time::now();
+  if (!use_pfs_) {
+    last_success_timestamp_ = Time::now();
+  }
   if (is_main_) {
     LOG(DEBUG) << "Sending updatesTooLong to force getDifference";
     BufferSlice packet(4);
@@ -735,7 +839,9 @@ Status Session::on_update(BufferSlice packet) {
     return Status::Error("Receive at update from CDN connection");
   }
 
-  last_success_timestamp_ = Time::now();
+  if (!use_pfs_) {
+    last_success_timestamp_ = Time::now();
+  }
   last_activity_timestamp_ = Time::now();
   callback_->on_update(std::move(packet));
   return Status::OK();
@@ -837,7 +943,7 @@ void Session::on_message_result_error(uint64 id, int error_code, string message)
                  "write to recover@telegram.org your phone number and other details to recover the account.";
         }
         auth_data_.set_auth_flag(false);
-        G()->shared_config().set_option_string("auth", message);
+        G()->log_out(message);
         shared_auth_data_->set_auth_key(auth_data_.get_main_auth_key());
         on_session_failed(Status::OK());
       }
@@ -863,6 +969,7 @@ void Session::on_message_result_error(uint64 id, int error_code, string message)
   }
   auto it = sent_queries_.find(id);
   if (it == sent_queries_.end()) {
+    current_info_->connection_->force_ack();
     return;
   }
 
@@ -995,7 +1102,6 @@ void Session::add_query(NetQueryPtr &&net_query) {
 }
 
 void Session::connection_send_query(ConnectionInfo *info, NetQueryPtr &&net_query, uint64 message_id) {
-  net_query->debug("Session: trying to send to mtproto::connection");
   CHECK(info->state_ == ConnectionInfo::State::Ready);
   current_info_ = info;
 
@@ -1015,6 +1121,7 @@ void Session::connection_send_query(ConnectionInfo *info, NetQueryPtr &&net_quer
   }
   if (!invoke_after.empty()) {
     if (!unknown_queries_.empty()) {
+      net_query->debug("Session: wait unknown query to invoke after it");
       pending_invoke_after_queries_.push_back(std::move(net_query));
       return;
     }
@@ -1022,6 +1129,7 @@ void Session::connection_send_query(ConnectionInfo *info, NetQueryPtr &&net_quer
 
   bool immediately_fail_query = false;
   if (!immediately_fail_query) {
+    net_query->debug("Session: send to mtproto::connection");
     auto r_message_id =
         info->connection_->send_query(net_query->query().clone(), net_query->gzip_flag() == NetQuery::GzipFlag::On,
                                       message_id, invoke_after_ids, static_cast<bool>(net_query->quick_ack_promise_));
@@ -1284,7 +1392,7 @@ void Session::on_handshake_ready(Result<unique_ptr<mtproto::AuthKeyHandshake>> r
   } else {
     auto handshake = r_handshake.move_as_ok();
     if (!handshake->is_ready_for_finish()) {
-      LOG(WARNING) << "Handshake is not yet ready";
+      LOG(INFO) << "Handshake is not yet ready";
       info.handshake_ = std::move(handshake);
     } else {
       if (is_main) {
@@ -1345,6 +1453,7 @@ void Session::create_gen_auth_key_actor(HandshakeId handshake_id) {
     mtproto::DhCallback *dh_callback_;
     std::shared_ptr<mtproto::PublicRsaKeyInterface> public_rsa_key_;
   };
+
   info.actor_ = create_actor<detail::GenAuthKeyActor>(
       PSLICE() << get_name() << "::GenAuthKey", get_name(), std::move(info.handshake_),
       td::make_unique<AuthKeyHandshakeContext>(DhCache::instance(), shared_auth_data_->public_rsa_key()),

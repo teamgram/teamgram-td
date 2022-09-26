@@ -377,7 +377,7 @@ TEST(DB, key_value) {
     values.push_back(td::rand_string('a', 'b', td::Random::fast(1, 10)));
   }
 
-  int queries_n = 3000;
+  int queries_n = 1000;
   td::vector<DbQuery> queries(queries_n);
   for (auto &q : queries) {
     int op = td::Random::fast(0, 2);
@@ -427,7 +427,7 @@ TEST(DB, key_value) {
     ASSERT_EQ(a.value, c.value);
     ASSERT_EQ(a.value, d.value);
     ASSERT_EQ(a.value, e.value);
-    if (cnt++ % 500 == 0) {
+    if (cnt++ % 200 == 0) {
       new_kv.impl().init(new_kv_name.str()).ensure();
     }
   }
@@ -684,8 +684,7 @@ TEST(DB, persistent_key_value) {
       int ref_cnt_;
     };
 
-    td::ConcurrentScheduler sched;
-    sched.init(threads_n);
+    td::ConcurrentScheduler sched(threads_n, 0);
     sched.create_actor_unsafe<Main>(0, "Main", threads_n, &queries, &res).release();
     sched.start();
     while (sched.run_main(10)) {

@@ -6,7 +6,6 @@
 //
 #include "td/telegram/net/NetQueryDispatcher.h"
 
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/net/AuthDataShared.h"
 #include "td/telegram/net/DcAuthManager.h"
@@ -24,7 +23,7 @@
 #include "td/utils/format.h"
 #include "td/utils/logging.h"
 #include "td/utils/misc.h"
-#include "td/utils/port/thread.h"
+#include "td/utils/port/sleep.h"
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
 
@@ -47,7 +46,7 @@ void NetQueryDispatcher::dispatch(NetQueryPtr net_query) {
     net_query->set_error(Global::request_aborted_error());
     return complete_net_query(std::move(net_query));
   }
-  if (G()->shared_config().get_option_boolean("test_flood_wait")) {
+  if (G()->get_option_boolean("test_flood_wait")) {
     net_query->set_error(Status::Error(429, "Too Many Requests: retry after 10"));
     return complete_net_query(std::move(net_query));
     //    if (net_query->is_ok() && net_query->tl_constructor() == 0x0d9d75a4) {
@@ -168,9 +167,10 @@ Status NetQueryDispatcher::wait_dc_init(DcId dc_id, bool force) {
     int32 slow_net_scheduler_id = G()->get_slow_net_scheduler_id();
 
     auto raw_dc_id = dc_id.get_raw_id();
-    int32 upload_session_count = raw_dc_id != 2 && raw_dc_id != 4 ? 8 : 4;
-    int32 download_session_count = 2;
-    int32 download_small_session_count = 2;
+    bool is_premium = G()->get_option_boolean("is_premium");
+    int32 upload_session_count = (raw_dc_id != 2 && raw_dc_id != 4) || is_premium ? 8 : 4;
+    int32 download_session_count = is_premium ? 8 : 2;
+    int32 download_small_session_count = is_premium ? 8 : 2;
     dc.main_session_ = create_actor<SessionMultiProxy>(PSLICE() << "SessionMultiProxy:" << raw_dc_id << ":main",
                                                        session_count, auth_data, raw_dc_id == main_dc_id_, use_pfs,
                                                        false, false, is_cdn, need_destroy_key);
@@ -193,7 +193,7 @@ Status NetQueryDispatcher::wait_dc_init(DcId dc_id, bool force) {
         return Status::Error("Closing");
       }
 #if !TD_THREAD_UNSUPPORTED
-      td::this_thread::yield();
+      usleep_for(1);
 #endif
     }
   }
@@ -272,19 +272,16 @@ void NetQueryDispatcher::update_mtproto_header() {
   }
 }
 
-void NetQueryDispatcher::update_valid_dc(DcId dc_id) {
-  wait_dc_init(dc_id, true).ignore();
-}
-
 bool NetQueryDispatcher::is_dc_inited(int32 raw_dc_id) {
   return dcs_[raw_dc_id - 1].is_valid_.load(std::memory_order_relaxed);
 }
+
 int32 NetQueryDispatcher::get_session_count() {
-  return max(narrow_cast<int32>(G()->shared_config().get_option_integer("session_count")), 1);
+  return max(narrow_cast<int32>(G()->get_option_integer("session_count")), 1);
 }
 
 bool NetQueryDispatcher::get_use_pfs() {
-  return G()->shared_config().get_option_boolean("use_pfs") || get_session_count() > 1;
+  return G()->get_option_boolean("use_pfs") || get_session_count() > 1;
 }
 
 NetQueryDispatcher::NetQueryDispatcher(const std::function<ActorShared<>()> &create_reference) {
@@ -333,7 +330,7 @@ void NetQueryDispatcher::set_main_dc_id(int32 new_main_dc_id) {
     return;
   }
 
-  // Very rare event. Mutex is ok.
+  // Very rare event; mutex is ok.
   std::lock_guard<std::mutex> guard(main_dc_id_mutex_);
   if (new_main_dc_id == main_dc_id_) {
     return;
@@ -350,6 +347,10 @@ void NetQueryDispatcher::set_main_dc_id(int32 new_main_dc_id) {
   send_closure_later(dc_auth_manager_, &DcAuthManager::update_main_dc,
                      DcId::internal(main_dc_id_.load(std::memory_order_relaxed)));
   G()->td_db()->get_binlog_pmc()->set("main_dc_id", to_string(main_dc_id_.load(std::memory_order_relaxed)));
+}
+
+void NetQueryDispatcher::check_authorization_is_ok() {
+  send_closure(dc_auth_manager_, &DcAuthManager::check_authorization_is_ok);
 }
 
 }  // namespace td

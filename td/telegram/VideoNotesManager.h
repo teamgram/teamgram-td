@@ -6,15 +6,16 @@
 //
 #pragma once
 
+#include "td/telegram/Dimensions.h"
 #include "td/telegram/files/FileId.h"
-#include "td/telegram/Photo.h"
+#include "td/telegram/PhotoSize.h"
 #include "td/telegram/SecretInputMedia.h"
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
-#include "td/utils/FlatHashMap.h"
+#include "td/utils/WaitFreeHashMap.h"
 
 namespace td {
 
@@ -23,6 +24,11 @@ class Td;
 class VideoNotesManager {
  public:
   explicit VideoNotesManager(Td *td);
+  VideoNotesManager(const VideoNotesManager &) = delete;
+  VideoNotesManager &operator=(const VideoNotesManager &) = delete;
+  VideoNotesManager(VideoNotesManager &&) = delete;
+  VideoNotesManager &operator=(VideoNotesManager &&) = delete;
+  ~VideoNotesManager();
 
   int32 get_video_note_duration(FileId file_id) const;
 
@@ -37,7 +43,7 @@ class VideoNotesManager {
 
   SecretInputMedia get_secret_input_media(FileId video_note_file_id,
                                           tl_object_ptr<telegram_api::InputEncryptedFile> input_file,
-                                          BufferSlice thumbnail) const;
+                                          BufferSlice thumbnail, int32 layer) const;
 
   FileId get_video_note_thumbnail_file_id(FileId file_id) const;
 
@@ -45,7 +51,7 @@ class VideoNotesManager {
 
   FileId dup_video_note(FileId new_id, FileId old_id);
 
-  void merge_video_notes(FileId new_id, FileId old_id, bool can_delete_old);
+  void merge_video_notes(FileId new_id, FileId old_id);
 
   template <class StorerT>
   void store_video_note(FileId file_id, StorerT &storer) const;
@@ -69,7 +75,7 @@ class VideoNotesManager {
   FileId on_get_video_note(unique_ptr<VideoNote> new_video_note, bool replace);
 
   Td *td_;
-  FlatHashMap<FileId, unique_ptr<VideoNote>, FileIdHash> video_notes_;
+  WaitFreeHashMap<FileId, unique_ptr<VideoNote>, FileIdHash> video_notes_;
 };
 
 }  // namespace td

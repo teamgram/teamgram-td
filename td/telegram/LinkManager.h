@@ -12,9 +12,9 @@
 #include "td/telegram/UserId.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 
@@ -47,10 +47,16 @@ class LinkManager final : public Actor {
   };
 
   // checks whether the link is a valid tg, ton or HTTP(S) URL and returns it in a canonical form
-  static Result<string> check_link(Slice link);
+  static Result<string> check_link(CSlice link, bool http_only = false, bool https_only = false);
+
+  // same as check_link, but returns an empty string instead of an error
+  static string get_checked_link(Slice link, bool http_only = false, bool https_only = false);
+
+  // returns whether a link is an internal link, supported or not
+  static bool is_internal_link(Slice link);
 
   // checks whether the link is a supported tg or t.me link and parses it
-  static unique_ptr<InternalLink> parse_internal_link(Slice link);
+  static unique_ptr<InternalLink> parse_internal_link(Slice link, bool is_trusted = false);
 
   void update_autologin_domains(string autologin_token, vector<string> autologin_domains,
                                 vector<string> url_auth_domains);
@@ -74,6 +80,8 @@ class LinkManager final : public Actor {
 
   static UserId get_link_user_id(Slice url);
 
+  static Result<int64> get_link_custom_emoji_document_id(Slice url);
+
   static Result<MessageLinkInfo> get_message_link_info(Slice url);
 
  private:
@@ -82,8 +90,10 @@ class LinkManager final : public Actor {
   void tear_down() final;
 
   class InternalLinkActiveSessions;
+  class InternalLinkAttachMenuBot;
   class InternalLinkAuthenticationCode;
   class InternalLinkBackground;
+  class InternalLinkBotAddToChannel;
   class InternalLinkBotStart;
   class InternalLinkBotStartInGroup;
   class InternalLinkChangePhoneNumber;
@@ -91,15 +101,19 @@ class LinkManager final : public Actor {
   class InternalLinkDialogInvite;
   class InternalLinkFilterSettings;
   class InternalLinkGame;
+  class InternalLinkInstantView;
+  class InternalLinkInvoice;
   class InternalLinkLanguage;
   class InternalLinkLanguageSettings;
   class InternalLinkMessage;
   class InternalLinkMessageDraft;
   class InternalLinkPassportDataRequest;
+  class InternalLinkPremiumFeatures;
   class InternalLinkPrivacyAndSecuritySettings;
   class InternalLinkProxy;
   class InternalLinkPublicDialog;
   class InternalLinkQrCodeAuthentication;
+  class InternalLinkRestorePurchases;
   class InternalLinkSettings;
   class InternalLinkStickerSet;
   class InternalLinkTheme;
@@ -109,22 +123,25 @@ class LinkManager final : public Actor {
   class InternalLinkUserPhoneNumber;
   class InternalLinkVoiceChat;
 
+  enum class LinkType : int32 { External, TMe, Tg, Telegraph };
+
   struct LinkInfo {
-    bool is_internal_ = false;
-    bool is_tg_ = false;
+    LinkType type_ = LinkType::External;
     string query_;
   };
   // returns information about the link
   static LinkInfo get_link_info(Slice link);
 
-  static unique_ptr<InternalLink> parse_tg_link_query(Slice query);
+  static unique_ptr<InternalLink> parse_tg_link_query(Slice query, bool is_trusted);
 
-  static unique_ptr<InternalLink> parse_t_me_link_query(Slice query);
+  static unique_ptr<InternalLink> parse_t_me_link_query(Slice query, bool is_trusted);
 
   static unique_ptr<InternalLink> get_internal_link_passport(Slice query,
                                                              const vector<std::pair<string, string>> &args);
 
   static unique_ptr<InternalLink> get_internal_link_message_draft(Slice url, Slice text);
+
+  static Result<string> check_link_impl(Slice link, bool http_only, bool https_only);
 
   Td *td_;
   ActorShared<> parent_;

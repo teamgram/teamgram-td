@@ -277,10 +277,10 @@ function split_file($file, $chunks, $undo) {
         if (!preg_match('/Td::~?Td/', $new_content)) {  // destructor Td::~Td needs to see definitions of all forward-declared classes
             $td_methods = array(
                 'animations_manager[_(-][^.]|AnimationsManager[^;>]' => "AnimationsManager",
+                'attach_menu_manager[_(-][^.]|AttachMenuManager[^;>]' => "AttachMenuManager",
                 'audios_manager[_(-][^.]|AudiosManager' => "AudiosManager",
                 'auth_manager[_(-][^.]|AuthManager' => 'AuthManager',
                 'background_manager[_(-][^.]|BackgroundManager' => "BackgroundManager",
-                'ConfigShared|shared_config[(]' => 'ConfigShared',
                 'contacts_manager[_(-][^.]|ContactsManager([^ ;.]| [^*])' => 'ContactsManager',
                 'country_info_manager[_(-][^.]|CountryInfoManager' => 'CountryInfoManager',
                 'documents_manager[_(-][^.]|DocumentsManager' => "DocumentsManager",
@@ -297,6 +297,7 @@ function split_file($file, $chunks, $undo) {
                 'MessageCopyOptions' => 'MessageCopyOptions',
                 'messages_manager[_(-][^.]|MessagesManager' => 'MessagesManager',
                 'notification_manager[_(-][^.]|NotificationManager|notifications[)]' => 'NotificationManager',
+                'notification_settings_manager[_(-][^.]|NotificationSettingsManager' => 'NotificationSettingsManager',
                 'option_manager[_(-][^.]|OptionManager' => "OptionManager",
                 'phone_number_manager[_(-][^.]|PhoneNumberManager' => "PhoneNumberManager",
                 'poll_manager[_(-][^.]|PollManager' => "PollManager",

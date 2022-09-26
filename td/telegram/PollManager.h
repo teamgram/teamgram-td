@@ -16,13 +16,13 @@
 #include "td/telegram/UserId.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
-#include "td/actor/Timeout.h"
+#include "td/actor/MultiTimeout.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/FlatHashMap.h"
 #include "td/utils/FlatHashSet.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Status.h"
 
 #include <utility>
@@ -77,7 +77,7 @@ class PollManager final : public Actor {
   tl_object_ptr<telegram_api::InputMedia> get_input_media(PollId poll_id) const;
 
   PollId on_get_poll(PollId poll_id, tl_object_ptr<telegram_api::poll> &&poll_server,
-                     tl_object_ptr<telegram_api::pollResults> &&poll_results);
+                     tl_object_ptr<telegram_api::pollResults> &&poll_results, const char *source);
 
   void on_get_poll_vote(PollId poll_id, UserId user_id, vector<BufferSlice> &&options);
 
@@ -136,6 +136,7 @@ class PollManager final : public Actor {
   };
 
   static constexpr int32 MAX_GET_POLL_VOTERS = 50;  // server side limit
+  static constexpr int32 UNLOAD_POLL_DELAY = 600;   // some reasonable value
 
   class SetPollAnswerLogEvent;
   class StopPollLogEvent;
@@ -146,6 +147,8 @@ class PollManager final : public Actor {
   static void on_update_poll_timeout_callback(void *poll_manager_ptr, int64 poll_id_int);
 
   static void on_close_poll_timeout_callback(void *poll_manager_ptr, int64 poll_id_int);
+
+  static void on_unload_poll_timeout_callback(void *poll_manager_ptr, int64 poll_id_int);
 
   static td_api::object_ptr<td_api::pollOption> get_poll_option_object(const PollOption &poll_option);
 
@@ -159,7 +162,13 @@ class PollManager final : public Actor {
 
   const Poll *get_poll(PollId poll_id) const;
 
+  const Poll *get_poll(PollId poll_id);
+
   Poll *get_poll_editable(PollId poll_id);
+
+  bool can_unload_poll(PollId poll_id);
+
+  void schedule_poll_unload(PollId poll_id);
 
   void notify_on_poll_update(PollId poll_id);
 
@@ -174,6 +183,8 @@ class PollManager final : public Actor {
   void on_update_poll_timeout(PollId poll_id);
 
   void on_close_poll_timeout(PollId poll_id);
+
+  void on_unload_poll_timeout(PollId poll_id);
 
   void on_online();
 
@@ -202,14 +213,20 @@ class PollManager final : public Actor {
   void do_stop_poll(PollId poll_id, FullMessageId full_message_id, unique_ptr<ReplyMarkup> &&reply_markup,
                     uint64 log_event_id, Promise<Unit> &&promise);
 
+  void on_stop_poll_finished(PollId poll_id, uint64 log_event_id, Result<Unit> &&result, Promise<Unit> &&promise);
+
+  void forget_local_poll(PollId poll_id);
+
   MultiTimeout update_poll_timeout_{"UpdatePollTimeout"};
   MultiTimeout close_poll_timeout_{"ClosePollTimeout"};
+  MultiTimeout unload_poll_timeout_{"UnloadPollTimeout"};
 
   Td *td_;
   ActorShared<> parent_;
   FlatHashMap<PollId, unique_ptr<Poll>, PollIdHash> polls_;
 
-  FlatHashMap<PollId, FlatHashSet<FullMessageId, FullMessageIdHash>, PollIdHash> poll_messages_;
+  FlatHashMap<PollId, FlatHashSet<FullMessageId, FullMessageIdHash>, PollIdHash> server_poll_messages_;
+  FlatHashMap<PollId, FlatHashSet<FullMessageId, FullMessageIdHash>, PollIdHash> other_poll_messages_;
 
   struct PendingPollAnswer {
     vector<string> options_;

@@ -253,7 +253,7 @@ class MainQueryActor final : public td::Actor {
   }
 
   void wakeup() final {
-    int cnt = 100000;
+    int cnt = 10000;
     while (out_cnt_ < in_cnt_ + 100 && out_cnt_ < cnt) {
       if (td::Random::fast_bool()) {
         send_closure(rand_elem(actors_), &QueryActor::query, create_query());
@@ -294,7 +294,7 @@ class SimpleActor final : public td::Actor {
   }
 
   void wakeup() final {
-    if (q_ == 100000) {
+    if (q_ == 10000) {
       td::Scheduler::instance()->finish();
       stop();
       return;
@@ -394,9 +394,8 @@ class SendToDead final : public td::Actor {
 TEST(Actors, send_to_dead) {
   //TODO: fix CHECK(storage_count_.load() == 0)
   return;
-  td::ConcurrentScheduler sched;
   int threads_n = 5;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<SendToDead>(0, "SendToDead").release();
   sched.start();
@@ -407,9 +406,8 @@ TEST(Actors, send_to_dead) {
 }
 
 TEST(Actors, main_simple) {
-  td::ConcurrentScheduler sched;
   int threads_n = 3;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<SimpleActor>(threads_n > 1 ? 1 : 0, "simple", threads_n).release();
   sched.start();
@@ -420,9 +418,8 @@ TEST(Actors, main_simple) {
 }
 
 TEST(Actors, main) {
-  td::ConcurrentScheduler sched;
   int threads_n = 9;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<MainQueryActor>(threads_n > 1 ? 1 : 0, "MainQuery", threads_n).release();
   sched.start();
@@ -446,9 +443,8 @@ class DoAfterStop final : public td::Actor {
 };
 
 TEST(Actors, do_after_stop) {
-  td::ConcurrentScheduler sched;
   int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   sched.create_actor_unsafe<DoAfterStop>(0, "DoAfterStop").release();
   sched.start();
@@ -492,9 +488,8 @@ static void check_context() {
 }
 
 TEST(Actors, context_during_destruction) {
-  td::ConcurrentScheduler sched;
   int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(threads_n, 0);
 
   {
     auto guard = sched.get_main_guard();

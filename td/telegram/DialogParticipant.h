@@ -6,8 +6,8 @@
 //
 #pragma once
 
+#include "td/telegram/ChannelType.h"
 #include "td/telegram/DialogId.h"
-#include "td/telegram/MessageId.h"
 #include "td/telegram/td_api.h"
 #include "td/telegram/telegram_api.h"
 #include "td/telegram/UserId.h"
@@ -43,16 +43,26 @@ class AdministratorRights {
 
   friend class DialogParticipantStatus;
 
-  explicit AdministratorRights(int32 flags) : flags_(flags & ALL_ADMINISTRATOR_RIGHTS) {
+  explicit AdministratorRights(int32 flags) : flags_(flags & (ALL_ADMINISTRATOR_RIGHTS | IS_ANONYMOUS)) {
   }
 
  public:
+  AdministratorRights() : flags_(0) {
+  }
+
+  AdministratorRights(const tl_object_ptr<telegram_api::chatAdminRights> &admin_rights, ChannelType channel_type);
+
+  AdministratorRights(const td_api::object_ptr<td_api::chatAdministratorRights> &administrator_rights,
+                      ChannelType channel_type);
+
   AdministratorRights(bool is_anonymous, bool can_manage_dialog, bool can_change_info, bool can_post_messages,
                       bool can_edit_messages, bool can_delete_messages, bool can_invite_users,
-                      bool can_restrict_members, bool can_pin_messages, bool can_promote_members,
-                      bool can_manage_calls);
+                      bool can_restrict_members, bool can_pin_messages, bool can_promote_members, bool can_manage_calls,
+                      ChannelType channel_type);
 
   telegram_api::object_ptr<telegram_api::chatAdminRights> get_chat_admin_rights() const;
+
+  td_api::object_ptr<td_api::chatAdministratorRights> get_chat_administrator_rights_object() const;
 
   bool can_manage_dialog() const {
     return (flags_ & CAN_MANAGE_DIALOG) != 0;
@@ -152,6 +162,10 @@ class RestrictedRights {
   }
 
  public:
+  explicit RestrictedRights(const tl_object_ptr<telegram_api::chatBannedRights> &rights);
+
+  explicit RestrictedRights(const td_api::object_ptr<td_api::chatPermissions> &rights);
+
   RestrictedRights(bool can_send_messages, bool can_send_media, bool can_send_stickers, bool can_send_animations,
                    bool can_send_games, bool can_use_inline_bots, bool can_add_web_page_previews, bool can_send_polls,
                    bool can_change_info_and_settings, bool can_invite_users, bool can_pin_messages);
@@ -261,12 +275,6 @@ class DialogParticipantStatus {
   static DialogParticipantStatus Administrator(AdministratorRights administrator_rights, string &&rank,
                                                bool can_be_edited);
 
-  static DialogParticipantStatus Administrator(bool is_anonymous, string &&rank, bool can_be_edited,
-                                               bool can_manage_dialog, bool can_change_info, bool can_post_messages,
-                                               bool can_edit_messages, bool can_delete_messages, bool can_invite_users,
-                                               bool can_restrict_members, bool can_pin_messages,
-                                               bool can_promote_members, bool can_manage_calls);
-
   static DialogParticipantStatus Member();
 
   static DialogParticipantStatus Restricted(RestrictedRights restricted_rights, bool is_member,
@@ -282,8 +290,11 @@ class DialogParticipantStatus {
   // legacy rights
   static DialogParticipantStatus ChannelAdministrator(bool is_creator, bool is_megagroup);
 
-  DialogParticipantStatus(bool can_be_edited, tl_object_ptr<telegram_api::chatAdminRights> &&admin_rights, string rank);
+  // forcely returns an administrator
+  DialogParticipantStatus(bool can_be_edited, tl_object_ptr<telegram_api::chatAdminRights> &&admin_rights, string rank,
+                          ChannelType channel_type);
 
+  // forcely returns a restricted or banned
   DialogParticipantStatus(bool is_member, tl_object_ptr<telegram_api::chatBannedRights> &&banned_rights);
 
   RestrictedRights get_effective_restricted_rights() const;
@@ -317,7 +328,7 @@ class DialogParticipantStatus {
   }
 
   bool can_delete_messages() const {
-    return get_administrator_rights().can_edit_messages();
+    return get_administrator_rights().can_delete_messages();
   }
 
   bool can_invite_users() const {
@@ -347,6 +358,10 @@ class DialogParticipantStatus {
 
   bool can_be_edited() const {
     return (flags_ & CAN_BE_EDITED) != 0;
+  }
+
+  void toggle_can_be_edited() {
+    flags_ ^= CAN_BE_EDITED;
   }
 
   bool can_send_messages() const {
@@ -489,7 +504,7 @@ struct DialogParticipant {
   DialogParticipant(tl_object_ptr<telegram_api::ChatParticipant> &&participant_ptr, int32 chat_creation_date,
                     bool is_creator);
 
-  explicit DialogParticipant(tl_object_ptr<telegram_api::ChannelParticipant> &&participant_ptr);
+  DialogParticipant(tl_object_ptr<telegram_api::ChannelParticipant> &&participant_ptr, ChannelType channel_type);
 
   static DialogParticipant left(DialogId dialog_id) {
     return {dialog_id, UserId(), 0, DialogParticipantStatus::Left()};
@@ -539,12 +554,7 @@ struct DialogParticipants {
   td_api::object_ptr<td_api::chatMembers> get_chat_members_object(Td *td) const;
 };
 
-DialogParticipantStatus get_dialog_participant_status(const tl_object_ptr<td_api::ChatMemberStatus> &status);
-
-AdministratorRights get_administrator_rights(tl_object_ptr<telegram_api::chatAdminRights> &&admin_rights);
-
-RestrictedRights get_restricted_rights(tl_object_ptr<telegram_api::chatBannedRights> &&banned_rights);
-
-RestrictedRights get_restricted_rights(const td_api::object_ptr<td_api::chatPermissions> &permissions);
+DialogParticipantStatus get_dialog_participant_status(const td_api::object_ptr<td_api::ChatMemberStatus> &status,
+                                                      ChannelType channel_type);
 
 }  // namespace td

@@ -197,7 +197,7 @@ HttpUrlQuery parse_url_query(Slice query) {
 
   HttpUrlQuery result;
   result.path_ = full_split(url_decode(query.substr(0, path_size), false), '/');
-  if (!result.path_.empty() && result.path_.back().empty()) {
+  while (!result.path_.empty() && result.path_.back().empty()) {
     result.path_.pop_back();
   }
 
@@ -218,6 +218,12 @@ HttpUrlQuery parse_url_query(Slice query) {
   }
 
   return result;
+}
+
+bool HttpUrlQuery::has_arg(Slice key) const {
+  auto it =
+      std::find_if(args_.begin(), args_.end(), [&key](const std::pair<string, string> &s) { return s.first == key; });
+  return it != args_.end();
 }
 
 Slice HttpUrlQuery::get_arg(Slice key) const {

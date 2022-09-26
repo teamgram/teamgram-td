@@ -3,11 +3,13 @@
 
 <head>
   <title>TDLib build instructions</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <style>
     :root {
       --background: #fafafa;
       --color: black;
       --color-primary: #0088ff;
+      --color-primary-light: #42a7ff;
       --color-code-block: #ebf9ff;
       --color-select-border: rgb(211, 211, 211);
       --color-checkbox-background: rgb(211, 211, 211);
@@ -38,6 +40,14 @@
     body {
       font-family: 'Segoe UI', Arial, Helvetica, sans-serif;
     }
+    :focus:not(:focus-visible) {
+      outline: none;
+    }
+    input:focus-visible, select:focus-visible, button:focus-visible {
+      box-shadow: 0 0 0 3px var(--color-primary);
+      outline: none;
+    }
+
     .hide {
       display: none;
     }
@@ -62,6 +72,7 @@
       padding: 5px;
       margin-bottom: 0;
       display: block;
+      overflow-x: auto;
     }
     #buildCommands ul {
       list-style: '$ ';
@@ -70,10 +81,15 @@
     a {
       color: var(--color-primary);
       text-decoration-color: transparent;
-      transition: text-decoration-color 200ms;
+      transition: text-decoration 200ms, color 200ms;
     }
     a:hover {
       text-decoration: underline;
+    }
+    a:focus-visible {
+      text-decoration: underline 2px;
+      color: var(--color-primary-light);
+      outline: none;
     }
     select, button {
       border: 1px solid var(--color-select-border);
@@ -81,17 +97,11 @@
       color: var(--color);
       padding: 5px;
       margin-top: 5px;
-      transition: border 200ms, padding 200ms;
+      box-shadow: 0 0 0 0 var(--color-primary);
+      transition: border 200ms, padding 200ms, box-shadow 200ms;
       border-radius: 999em;
       font-size: 16px;
       cursor: pointer;
-    }
-
-    select:focus, button:focus {
-      outline: none;
-      border-color: var(--color-primary);
-      border-width: 2px;
-      padding: 4px;
     }
 
     label * {
@@ -108,7 +118,8 @@
       width: 20px;
       border-radius: 3px;
       position: relative;
-      transition: background-color 200ms;
+      top: -1px; // Fix alignment
+      transition: background-color 200ms, box-shadow 200ms;
     }
     input[type=checkbox]::after {
       content: "";
@@ -141,7 +152,8 @@
       width: 20px;
       border-radius: 100%;
       position: relative;
-      transition: background-color 200ms;
+      top: -2px; // Fix alignment
+      transition: background-color 200ms, box-shadow 200ms;
     }
     input[type=radio]::after {
       content: "";
@@ -181,7 +193,7 @@
 
 <div class="main">
   <div id="languageSelectDiv">
-    <p>Choose a programming language, from which you want to use TDLib:</p>
+    <p>Choose a programming language from which you want to use TDLib:</p>
     <select id="languageSelect" onchange="onLanguageChanged(false)" autofocus class="large">
       <option>Choose a programming language:</option>
       <option>Python</option>
@@ -213,7 +225,7 @@
   </div>
 
   <div id="osSelectDiv" class="hide">
-    <p>Choose an operating system, on which you want to use TDLib:</p>
+    <p>Choose an operating system on which you want to use TDLib:</p>
     <select id="osSelect" onchange="onOsChanged()" class="large">
       <option>Choose an operating system:</option>
     </select>
@@ -221,7 +233,7 @@
   </div>
 
   <div id="linuxSelectDiv" class="hide">
-    <p>Choose a Linux distro, on which you want to use TDLib:</p>
+    <p>Choose a Linux distro on which you want to use TDLib:</p>
     <select id="linuxSelect" onchange="onOsChanged()" class="large">
       <option>Choose a Linux distro:</option>
       <option>Alpine</option>
@@ -234,6 +246,7 @@
       <option>Ubuntu 16</option>
       <option>Ubuntu 18</option>
       <option>Ubuntu 20</option>
+      <option>Ubuntu 22</option>
       <option>Other</option>
     </select>
     <p></p>
@@ -626,7 +639,7 @@ function onOptionsChanged() {
   var use_vcpkg = os_windows;
 
   var use_lto = false;
-  if (!use_msvc && language !== 'Java' && language !== 'Kotlin' && (os_mac || (os_linux && (linux_distro === 'Ubuntu 18' || linux_distro === 'Ubuntu 20' || linux_distro === 'Other')))) {
+  if (!use_msvc && language !== 'Java' && language !== 'Kotlin' && (os_mac || (os_linux && (linux_distro === 'Ubuntu 18' || linux_distro === 'Ubuntu 20' || linux_distro === 'Ubuntu 22' || linux_distro === 'Other')))) {
     document.getElementById('buildLtoDiv').style.display = 'block';
     use_lto = document.getElementById('buildLtoCheckbox').checked;
   } else {
@@ -722,7 +735,7 @@ function onOptionsChanged() {
     pre_text.push('Install Git, ' + compiler + ', make, CMake >= 3.0.2, OpenSSL-dev, zlib-dev, gperf, PHP' + jdk + ' using your package manager.');
   }
   if (os_linux && os.includes('Node.js')) {
-    pre_text.push('Note that for Node.js &le; 9.11.2 you must build TDLib with OpenSSL 1.0.* and for Node.js &ge; 10 with OpenSSL 1.1.* instead, so you may need to modify the following commands to install a proper OpenSSL version.');
+    pre_text.push('Note that for Node.js &ge; 17 you must build TDLib with OpenSSL 3.0.*, for Node.js &ge; 10 with OpenSSL 1.1.*, and for Node.js &lt; 10 with OpenSSL 1.0.*, so you may need to modify the following commands to install a proper OpenSSL version.');
   }
   if (os_freebsd) {
     pre_text.push('Note that the following instruction is for FreeBSD 11.');
@@ -733,7 +746,7 @@ function onOptionsChanged() {
     pre_text.push('Note that building requires a lot of memory, so you may need to increase allowed per-process memory usage in /etc/login.conf or build from root.');
   }
   if (os_netbsd) {
-    pre_text.push('Note that the following instruction is for NetBSD 8.0 and default SH shell.');
+    pre_text.push('Note that the following instruction is for NetBSD 8+ and default SH shell.');
   }
   if (os_mac) {
     pre_text.push('Note that the following instruction will build TDLib only for ' + os_mac_host_name + '.');
@@ -785,6 +798,8 @@ function onOptionsChanged() {
         return '-6.0';
       case 'Ubuntu 20':
         return '-10';
+      case 'Ubuntu 22':
+        return '-14';
       default:
         return ''; // use default version
     }
@@ -837,6 +852,7 @@ function onOptionsChanged() {
       case 'Ubuntu 16':
       case 'Ubuntu 18':
       case 'Ubuntu 20':
+      case 'Ubuntu 22':
         if (linux_distro.includes('Debian') && !use_root) {
           commands.push('su -');
         }
@@ -861,7 +877,7 @@ function onOptionsChanged() {
         }
         if (use_clang) {
           packages += ' clang' + getClangVersionSuffix() + ' libc++-dev';
-          if (linux_distro === 'Debian 10+' || linux_distro === 'Ubuntu 18' || linux_distro === 'Ubuntu 20') {
+          if (linux_distro === 'Debian 10+' || linux_distro === 'Ubuntu 18' || linux_distro === 'Ubuntu 20' || linux_distro === 'Ubuntu 22') {
             packages += ' libc++abi-dev';
           }
         } else {
@@ -901,8 +917,8 @@ function onOptionsChanged() {
     if (!use_root) {
       commands.push('su -');
     }
-    commands.push('export PKG_PATH=ftp://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/i386/8.0_2019Q2/All');
-    var packages = 'git gperf php-7.3.6 cmake openssl gcc5-libs';
+    commands.push('export PKG_PATH=http://cdn.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r)/All');
+    var packages = 'git gperf pcre2 php-8* cmake openssl gcc12-libs mozilla-rootcerts-openssl';
     commands.push('pkg_add ' + packages);
     if (!use_root) {
       commands.push('exit');
@@ -916,6 +932,7 @@ function onOptionsChanged() {
   if (use_vcpkg) {
     commands.push('git clone https://github.com/Microsoft/vcpkg.git');
     commands.push('cd vcpkg');
+    commands.push('git checkout 1b1ae50e1a69f7c659bd7d731e80b358d21c86ad');
     commands.push(local + 'bootstrap-vcpkg.bat');
     if (target === 'C++/CX') {
       commands.push(local + 'vcpkg.exe install gperf:x86-windows openssl:arm-uwp openssl:arm64-uwp openssl:x64-uwp openssl:x86-uwp zlib:arm-uwp zlib:arm64-uwp zlib:x64-uwp zlib:x86-uwp');

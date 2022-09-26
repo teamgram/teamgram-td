@@ -198,13 +198,8 @@ class FlatHashTable {
   };
 
   FlatHashTable() = default;
-  FlatHashTable(const FlatHashTable &other) {
-    assign(other);
-  }
-  void operator=(const FlatHashTable &other) {
-    clear();
-    assign(other);
-  }
+  FlatHashTable(const FlatHashTable &other) = delete;
+  FlatHashTable &operator=(const FlatHashTable &other) = delete;
 
   FlatHashTable(std::initializer_list<NodeT> nodes) {
     if (nodes.size() == 0) {
@@ -249,9 +244,7 @@ class FlatHashTable {
     other.drop();
   }
   ~FlatHashTable() {
-    if (nodes_ != nullptr) {
-      clear_nodes(nodes_);
-    }
+    clear_nodes(nodes_);
   }
 
   void swap(FlatHashTable &other) noexcept {
@@ -308,18 +301,28 @@ class FlatHashTable {
 
   template <class... ArgsT>
   std::pair<NodePointer, bool> emplace(KeyT key, ArgsT &&...args) {
-    try_grow();
     CHECK(!is_hash_table_key_empty(key));
+    if (unlikely(bucket_count_mask_ == 0)) {
+      CHECK(used_node_count_ == 0);
+      resize(8);
+    }
     auto bucket = calc_bucket(key);
     while (true) {
       auto &node = nodes_[bucket];
-      if (EqT()(node.key(), key)) {
-        return {NodePointer(&node), false};
-      }
       if (node.empty()) {
+        if (unlikely(used_node_count_ * 5 >= bucket_count_mask_ * 3)) {
+          resize(2 * bucket_count_);
+          CHECK(used_node_count_ * 5 < bucket_count_mask_ * 3);
+          return emplace(std::move(key), std::forward<ArgsT>(args)...);
+        }
+        invalidate_iterators();
+
         node.emplace(std::move(key), std::forward<ArgsT>(args)...);
         used_node_count_++;
         return {NodePointer(&node), true};
+      }
+      if (EqT()(node.key(), key)) {
+        return {NodePointer(&node), false};
       }
       next_bucket(bucket);
     }
@@ -423,30 +426,6 @@ class FlatHashTable {
     begin_bucket_ = 0;
   }
 
-  void assign(const FlatHashTable &other) {
-    if (other.size() == 0) {
-      return;
-    }
-    resize(other.bucket_count());
-    auto other_nodes_end = other.nodes_ + other.bucket_count_;
-    for (const NodeT *other_node = other.nodes_; other_node != other_nodes_end; ++other_node) {
-      if (other_node->empty()) {
-        continue;
-      }
-
-      auto bucket = calc_bucket(other_node->key());
-      while (true) {
-        auto &node = nodes_[bucket];
-        if (node.empty()) {
-          node.copy_from(*other_node);
-          break;
-        }
-        next_bucket(bucket);
-      }
-    }
-    used_node_count_ = other.used_node_count_;
-  }
-
   NodeT *begin_impl() {
     if (empty()) {
       return nullptr;
@@ -467,21 +446,14 @@ class FlatHashTable {
     auto bucket = calc_bucket(key);
     while (true) {
       auto &node = nodes_[bucket];
-      if (EqT()(node.key(), key)) {
-        return &node;
-      }
       if (node.empty()) {
         return nullptr;
       }
+      if (EqT()(node.key(), key)) {
+        return &node;
+      }
       next_bucket(bucket);
     }
-  }
-
-  void try_grow() {
-    if (unlikely(used_node_count_ * 5 >= bucket_count_mask_ * 3)) {
-      resize(2 * bucket_count_mask_ + 2 + 6 * (bucket_count_mask_ == 0));
-    }
-    invalidate_iterators();
   }
 
   void try_shrink() {

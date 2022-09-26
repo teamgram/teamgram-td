@@ -8,7 +8,6 @@
 
 #include "td/telegram/AuthManager.h"
 #include "td/telegram/BackgroundType.hpp"
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/DialogId.h"
 #include "td/telegram/Document.h"
 #include "td/telegram/DocumentsManager.h"
@@ -17,7 +16,7 @@
 #include "td/telegram/files/FileManager.h"
 #include "td/telegram/files/FileType.h"
 #include "td/telegram/Global.h"
-#include "td/telegram/Photo.h"
+#include "td/telegram/PhotoFormat.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/TdDb.h"
 #include "td/telegram/TdParameters.h"
@@ -34,6 +33,8 @@
 #include "td/utils/Slice.h"
 #include "td/utils/SliceBuilder.h"
 #include "td/utils/tl_helpers.h"
+
+#include <algorithm>
 
 namespace td {
 
@@ -451,7 +452,7 @@ void BackgroundManager::get_backgrounds(bool for_dark_theme,
 Result<string> BackgroundManager::get_background_url(const string &name,
                                                      td_api::object_ptr<td_api::BackgroundType> background_type) {
   TRY_RESULT(type, BackgroundType::get_background_type(background_type.get()));
-  auto url = PSTRING() << G()->shared_config().get_option_string("t_me_url", "https://t.me/") << "bg/";
+  auto url = PSTRING() << G()->get_option_string("t_me_url", "https://t.me/") << "bg/";
   auto link = type.get_link();
   if (type.has_file()) {
     url += name;
@@ -565,9 +566,7 @@ void BackgroundManager::on_load_background_from_database(string name, string val
     }
   }
 
-  for (auto &promise : promises) {
-    promise.set_value(Unit());
-  }
+  set_promises(promises);
 }
 
 td_api::object_ptr<td_api::updateSelectedBackground> BackgroundManager::get_update_selected_background_object(
@@ -857,7 +856,7 @@ void BackgroundManager::do_upload_background_file(FileId file_id, const Backgrou
                                                   Promise<Unit> &&promise) {
   if (input_file == nullptr) {
     FileView file_view = td_->file_manager_->get_file_view(file_id);
-    file_id = file_view.file_id();
+    file_id = file_view.get_main_file_id();
     auto it = file_id_to_background_id_.find(file_id);
     if (it != file_id_to_background_id_.end()) {
       set_background(it->second, type, for_dark_theme, std::move(promise));
@@ -1022,8 +1021,9 @@ void BackgroundManager::add_background(const Background &background, bool replac
 
   if (result->file_id != background.file_id) {
     if (result->file_id.is_valid()) {
-      if (!background.file_id.is_valid() || td_->file_manager_->get_file_view(result->file_id).file_id() !=
-                                                td_->file_manager_->get_file_view(background.file_id).file_id()) {
+      if (!background.file_id.is_valid() ||
+          td_->file_manager_->get_file_view(result->file_id).get_main_file_id() !=
+              td_->file_manager_->get_file_view(background.file_id).get_main_file_id()) {
         LOG(ERROR) << "Background file has changed from " << result->file_id << " to " << background.file_id;
         file_id_to_background_id_.erase(result->file_id);
         result->file_source_id = FileSourceId();

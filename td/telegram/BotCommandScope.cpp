@@ -54,12 +54,7 @@ Result<BotCommandScope> BotCommandScope::get_bot_command_scope(Td *td,
       type = Type::DialogParticipant;
       dialog_id = DialogId(scope->chat_id_);
       user_id = UserId(scope->user_id_);
-      if (!user_id.is_valid()) {
-        return Status::Error(400, "User not found");
-      }
-      if (!td->contacts_manager_->have_input_user(user_id)) {
-        return Status::Error(400, "Can't access the user");
-      }
+      TRY_STATUS(td->contacts_manager_->get_input_user(user_id));
       break;
     }
     default:
@@ -83,8 +78,7 @@ Result<BotCommandScope> BotCommandScope::get_bot_command_scope(Td *td,
       // ok
       break;
     case DialogType::Channel:
-      if (td->contacts_manager_->get_channel_type(dialog_id.get_channel_id()) !=
-          ContactsManager::ChannelType::Megagroup) {
+      if (td->contacts_manager_->is_broadcast_channel(dialog_id.get_channel_id())) {
         return Status::Error(400, "Can't change commands in channel chats");
       }
       break;
@@ -100,9 +94,8 @@ telegram_api::object_ptr<telegram_api::BotCommandScope> BotCommandScope::get_inp
     const Td *td) const {
   auto input_peer =
       dialog_id_.is_valid() ? td->messages_manager_->get_input_peer(dialog_id_, AccessRights::Read) : nullptr;
-  auto input_user = td->contacts_manager_->have_input_user(user_id_)
-                        ? td->contacts_manager_->get_input_user(user_id_).move_as_ok()
-                        : nullptr;
+  auto r_input_user = td->contacts_manager_->get_input_user(user_id_);
+  auto input_user = r_input_user.is_ok() ? r_input_user.move_as_ok() : nullptr;
   switch (type_) {
     case Type::Default:
       return telegram_api::make_object<telegram_api::botCommandScopeDefault>();

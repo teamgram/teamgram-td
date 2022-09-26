@@ -9,7 +9,6 @@
 #include "td/actor/PromiseFuture.h"
 #include "td/actor/SleepActor.h"
 
-#include "td/utils/algorithm.h"
 #include "td/utils/logging.h"
 #include "td/utils/Time.h"
 
@@ -22,11 +21,7 @@ void StateManager::on_synchronized(bool is_synchronized) {
   }
   if (sync_flag_ && !was_sync_) {
     was_sync_ = true;
-    auto promises = std::move(wait_first_sync_);
-    reset_to_empty(wait_first_sync_);
-    for (auto &promise : promises) {
-      promise.set_value(Unit());
-    }
+    set_promises(wait_first_sync_);
   }
 }
 
@@ -133,7 +128,7 @@ void StateManager::on_network_soft() {
 }
 
 void StateManager::start_up() {
-  create_actor<SleepActor>("SleepActor", 1, PromiseCreator::event(self_closure(this, &StateManager::on_network_soft)))
+  create_actor<SleepActor>("SleepActor", 1, create_event_promise(self_closure(this, &StateManager::on_network_soft)))
       .release();
   loop();
 }

@@ -1438,15 +1438,15 @@ void GroupCallManager::reload_group_call(InputGroupCallId input_group_call_id,
 
 void GroupCallManager::finish_get_group_call(InputGroupCallId input_group_call_id,
                                              Result<tl_object_ptr<telegram_api::phone_groupCall>> &&result) {
+  if (G()->close_flag()) {
+    result = Global::request_aborted_error();
+  }
+
   auto it = load_group_call_queries_.find(input_group_call_id);
   CHECK(it != load_group_call_queries_.end());
   CHECK(!it->second.empty());
   auto promises = std::move(it->second);
   load_group_call_queries_.erase(it);
-
-  if (G()->close_flag()) {
-    result = Global::request_aborted_error();
-  }
 
   if (result.is_ok()) {
     td_->contacts_manager_->on_get_users(std::move(result.ok_ref()->users_), "finish_get_group_call");
@@ -1459,9 +1459,7 @@ void GroupCallManager::finish_get_group_call(InputGroupCallId input_group_call_i
   }
 
   if (result.is_error()) {
-    for (auto &promise : promises) {
-      promise.set_error(result.error().clone());
-    }
+    fail_promises(promises, result.move_as_error());
     return;
   }
 
@@ -1634,7 +1632,11 @@ void GroupCallManager::on_get_group_call_participants(
   if (is_load) {
     auto *group_call_participants = add_group_call_participants(input_group_call_id);
     if (group_call_participants->next_offset == offset) {
-      group_call_participants->next_offset = std::move(participants->next_offset_);
+      if (!offset.empty() && participants->next_offset_.empty() && group_call_participants->joined_date_asc) {
+        LOG(INFO) << "Ignore empty next_offset";
+      } else {
+        group_call_participants->next_offset = std::move(participants->next_offset_);
+      }
     }
 
     if (is_empty || is_sync) {
@@ -1813,6 +1815,8 @@ void GroupCallManager::on_update_group_call_participants(
 
   auto &pending_version_updates = group_call_participants->pending_version_updates_[version].updates;
   auto &pending_mute_updates = group_call_participants->pending_mute_updates_[version].updates;
+  LOG(INFO) << "Have " << pending_version_updates.size() << " versioned and " << pending_mute_updates.size()
+            << " mute pending updates for " << input_group_call_id;
   for (auto &group_call_participant : participants) {
     GroupCallParticipant participant(group_call_participant, version);
     if (!participant.is_valid()) {
@@ -1865,6 +1869,9 @@ bool GroupCallManager::process_pending_group_call_participant_updates(InputGroup
   bool need_rejoin = true;
   auto &pending_version_updates = participants_it->second->pending_version_updates_;
   auto &pending_mute_updates = participants_it->second->pending_mute_updates_;
+
+  LOG(INFO) << "Process " << pending_version_updates.size() << " versioned and " << pending_mute_updates.size()
+            << " mute updates for " << input_group_call_id;
 
   auto process_mute_updates = [&] {
     while (!pending_mute_updates.empty()) {
@@ -2023,7 +2030,7 @@ void GroupCallManager::on_sync_group_call_participants(InputGroupCallId input_gr
 GroupCallParticipantOrder GroupCallManager::get_real_participant_order(bool can_self_unmute,
                                                                        const GroupCallParticipant &participant,
                                                                        const GroupCallParticipants *participants) {
-  auto real_order = participant.get_real_order(can_self_unmute, participants->joined_date_asc, false);
+  auto real_order = participant.get_real_order(can_self_unmute, participants->joined_date_asc);
   if (real_order >= participants->min_order) {
     return real_order;
   }
@@ -2093,7 +2100,7 @@ void GroupCallManager::process_group_call_participants(
     }
 
     if (is_load) {
-      auto real_order = participant.get_real_order(can_self_unmute, joined_date_asc, true);
+      auto real_order = participant.get_server_order(can_self_unmute, joined_date_asc);
       if (real_order > min_order) {
         LOG(ERROR) << "Receive group call participant " << participant.dialog_id << " with order " << real_order
                    << " after group call participant " << debug_min_order_dialog_id << " with order " << min_order;
@@ -2936,16 +2943,10 @@ void GroupCallManager::process_group_call_after_join_requests(InputGroupCallId i
     return;
   }
 
-  auto promises = std::move(group_call->after_join);
-  reset_to_empty(group_call->after_join);
   if (!group_call->is_active || !group_call->is_joined) {
-    for (auto &promise : promises) {
-      promise.set_error(Status::Error(400, "GROUPCALL_JOIN_MISSING"));
-    }
+    fail_promises(group_call->after_join, Status::Error(400, "GROUPCALL_JOIN_MISSING"));
   } else {
-    for (auto &promise : promises) {
-      promise.set_value(Unit());
-    }
+    set_promises(group_call->after_join);
   }
 }
 
@@ -3763,6 +3764,7 @@ void GroupCallManager::toggle_group_call_participant_is_muted(GroupCallId group_
                                                promise = std::move(promise)](Result<Unit> &&result) mutable {
     if (result.is_error()) {
       promise.set_error(result.move_as_error());
+      promise = Promise<Unit>();
     }
     send_closure(actor_id, &GroupCallManager::on_toggle_group_call_participant_is_muted, input_group_call_id, dialog_id,
                  generation, std::move(promise));
@@ -3858,6 +3860,7 @@ void GroupCallManager::set_group_call_participant_volume_level(GroupCallId group
                                                promise = std::move(promise)](Result<Unit> &&result) mutable {
     if (result.is_error()) {
       promise.set_error(result.move_as_error());
+      promise = Promise<Unit>();
     }
     send_closure(actor_id, &GroupCallManager::on_set_group_call_participant_volume_level, input_group_call_id,
                  dialog_id, generation, std::move(promise));
@@ -3957,6 +3960,7 @@ void GroupCallManager::toggle_group_call_participant_is_hand_raised(GroupCallId 
                                                promise = std::move(promise)](Result<Unit> &&result) mutable {
     if (result.is_error()) {
       promise.set_error(result.move_as_error());
+      promise = Promise<Unit>();
     }
     send_closure(actor_id, &GroupCallManager::on_toggle_group_call_participant_is_hand_raised, input_group_call_id,
                  dialog_id, generation, std::move(promise));
@@ -4112,7 +4116,11 @@ void GroupCallManager::on_group_call_left_impl(GroupCall *group_call, bool need_
   auto input_group_call_id = get_input_group_call_id(group_call->group_call_id).ok();
   try_clear_group_call_participants(input_group_call_id);
   if (!group_call->need_rejoin) {
-    process_group_call_after_join_requests(input_group_call_id, "on_group_call_left_impl");
+    if (is_group_call_being_joined(input_group_call_id)) {
+      LOG(ERROR) << "Left a being joined group call. Did you change audio_source_id without leaving the group call?";
+    } else {
+      process_group_call_after_join_requests(input_group_call_id, "on_group_call_left_impl");
+    }
   }
 }
 
@@ -4329,10 +4337,7 @@ InputGroupCallId GroupCallManager::update_group_call(const tl_object_ptr<telegra
       // never update ended calls
     } else if (!call.is_active) {
       // always update to an ended call, droping also is_joined, is_speaking and other local flags
-      auto promises = std::move(group_call->after_join);
-      for (auto &promise : promises) {
-        promise.set_error(Status::Error(400, "Group call ended"));
-      }
+      fail_promises(group_call->after_join, Status::Error(400, "Group call ended"));
       *group_call = std::move(call);
       need_update = true;
     } else {
@@ -4655,14 +4660,15 @@ bool GroupCallManager::set_group_call_participant_count(GroupCall *group_call, i
   }
 
   LOG(DEBUG) << "Set " << group_call->group_call_id << " participant count to " << count << " from " << source;
+  auto input_group_call_id = get_input_group_call_id(group_call->group_call_id).ok();
   if (count < 0) {
     LOG(ERROR) << "Participant count became negative in " << group_call->group_call_id << " in "
                << group_call->dialog_id << " from " << source;
     count = 0;
+    reload_group_call(input_group_call_id, Auto());
   }
 
   bool result = false;
-  auto input_group_call_id = get_input_group_call_id(group_call->group_call_id).ok();
   if (need_group_call_participants(input_group_call_id, group_call)) {
     auto known_participant_count =
         static_cast<int32>(add_group_call_participants(input_group_call_id)->participants.size());
@@ -4718,6 +4724,8 @@ bool GroupCallManager::set_group_call_unmuted_video_count(GroupCall *group_call,
     LOG(ERROR) << "Video participant count became negative in " << group_call->group_call_id << " in "
                << group_call->dialog_id << " from " << source;
     count = 0;
+    auto input_group_call_id = get_input_group_call_id(group_call->group_call_id).ok();
+    reload_group_call(input_group_call_id, Auto());
   }
 
   if (group_call->unmuted_video_count == count) {

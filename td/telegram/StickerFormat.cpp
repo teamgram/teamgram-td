@@ -10,6 +10,21 @@
 
 namespace td {
 
+StickerFormat get_sticker_format(const td_api::object_ptr<td_api::StickerFormat> &format) {
+  CHECK(format != nullptr);
+  switch (format->get_id()) {
+    case td_api::stickerFormatWebp::ID:
+      return StickerFormat::Webp;
+    case td_api::stickerFormatTgs::ID:
+      return StickerFormat::Tgs;
+    case td_api::stickerFormatWebm::ID:
+      return StickerFormat::Webm;
+    default:
+      UNREACHABLE();
+      return StickerFormat::Unknown;
+  }
+}
+
 StickerFormat get_sticker_format_by_mime_type(Slice mime_type) {
   if (mime_type == "application/x-tgsticker") {
     return StickerFormat::Tgs;
@@ -36,21 +51,17 @@ StickerFormat get_sticker_format_by_extension(Slice extension) {
   return StickerFormat::Unknown;
 }
 
-td_api::object_ptr<td_api::StickerType> get_sticker_type_object(
-    StickerFormat sticker_format, bool is_masks, td_api::object_ptr<td_api::maskPosition> mask_position) {
+td_api::object_ptr<td_api::StickerFormat> get_sticker_format_object(StickerFormat sticker_format) {
   switch (sticker_format) {
     case StickerFormat::Unknown:
       LOG(ERROR) << "Have a sticker of unknown format";
-      return td_api::make_object<td_api::stickerTypeStatic>();
+      return td_api::make_object<td_api::stickerFormatWebp>();
     case StickerFormat::Webp:
-      if (is_masks) {
-        return td_api::make_object<td_api::stickerTypeMask>(std::move(mask_position));
-      }
-      return td_api::make_object<td_api::stickerTypeStatic>();
+      return td_api::make_object<td_api::stickerFormatWebp>();
     case StickerFormat::Tgs:
-      return td_api::make_object<td_api::stickerTypeAnimated>();
+      return td_api::make_object<td_api::stickerFormatTgs>();
     case StickerFormat::Webm:
-      return td_api::make_object<td_api::stickerTypeVideo>();
+      return td_api::make_object<td_api::stickerFormatWebm>();
     default:
       UNREACHABLE();
       return nullptr;
@@ -88,6 +99,21 @@ Slice get_sticker_format_extension(StickerFormat sticker_format) {
   }
 }
 
+PhotoFormat get_sticker_format_photo_format(StickerFormat sticker_format) {
+  switch (sticker_format) {
+    case StickerFormat::Unknown:
+    case StickerFormat::Webp:
+      return PhotoFormat::Webp;
+    case StickerFormat::Tgs:
+      return PhotoFormat::Tgs;
+    case StickerFormat::Webm:
+      return PhotoFormat::Webm;
+    default:
+      UNREACHABLE();
+      return PhotoFormat::Webp;
+  }
+}
+
 bool is_sticker_format_animated(StickerFormat sticker_format) {
   switch (sticker_format) {
     case StickerFormat::Unknown:
@@ -120,15 +146,16 @@ bool is_sticker_format_vector(StickerFormat sticker_format) {
   }
 }
 
-int64 get_max_sticker_file_size(StickerFormat sticker_format, bool for_thumbnail) {
+int64 get_max_sticker_file_size(StickerFormat sticker_format, StickerType sticker_type, bool for_thumbnail) {
+  bool is_custom_emoji = sticker_type == StickerType::CustomEmoji;
   switch (sticker_format) {
     case StickerFormat::Unknown:
     case StickerFormat::Webp:
-      return for_thumbnail ? (1 << 17) : (1 << 19);
+      return for_thumbnail ? (1 << 17) : (is_custom_emoji ? (1 << 17) : (1 << 19));
     case StickerFormat::Tgs:
       return for_thumbnail ? (1 << 15) : (1 << 16);
     case StickerFormat::Webm:
-      return for_thumbnail ? (1 << 15) : (1 << 18);
+      return for_thumbnail ? (1 << 15) : (is_custom_emoji ? (1 << 16) : (1 << 18));
     default:
       UNREACHABLE();
       return 0;

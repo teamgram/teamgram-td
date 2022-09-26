@@ -7,7 +7,6 @@
 #include "td/telegram/SponsoredMessageManager.h"
 
 #include "td/telegram/ChannelId.h"
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/ContactsManager.h"
 #include "td/telegram/Global.h"
 #include "td/telegram/LinkManager.h"
@@ -15,6 +14,7 @@
 #include "td/telegram/MessageEntity.h"
 #include "td/telegram/MessagesManager.h"
 #include "td/telegram/net/NetQueryCreator.h"
+#include "td/telegram/OptionManager.h"
 #include "td/telegram/ServerMessageId.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/telegram_api.h"
@@ -90,6 +90,7 @@ class ViewSponsoredMessageQuery final : public Td::ResultHandler {
 
 struct SponsoredMessageManager::SponsoredMessage {
   int64 local_id = 0;
+  bool is_recommended = false;
   DialogId sponsor_dialog_id;
   ServerMessageId server_message_id;
   string start_param;
@@ -97,9 +98,10 @@ struct SponsoredMessageManager::SponsoredMessage {
   unique_ptr<MessageContent> content;
 
   SponsoredMessage() = default;
-  SponsoredMessage(int64 local_id, DialogId sponsor_dialog_id, ServerMessageId server_message_id, string start_param,
-                   string invite_hash, unique_ptr<MessageContent> content)
+  SponsoredMessage(int64 local_id, bool is_recommended, DialogId sponsor_dialog_id, ServerMessageId server_message_id,
+                   string start_param, string invite_hash, unique_ptr<MessageContent> content)
       : local_id(local_id)
+      , is_recommended(is_recommended)
       , sponsor_dialog_id(sponsor_dialog_id)
       , server_message_id(server_message_id)
       , start_param(std::move(start_param))
@@ -161,13 +163,13 @@ td_api::object_ptr<td_api::sponsoredMessage> SponsoredMessageManager::get_sponso
       if (bot_username.empty()) {
         break;
       }
-      link = td_api::make_object<td_api::internalLinkTypeBotStart>(bot_username, sponsored_message.start_param);
+      link = td_api::make_object<td_api::internalLinkTypeBotStart>(bot_username, sponsored_message.start_param, false);
       break;
     }
     case DialogType::Channel:
       if (sponsored_message.server_message_id.is_valid()) {
         auto channel_id = sponsored_message.sponsor_dialog_id.get_channel_id();
-        auto t_me = G()->shared_config().get_option_string("t_me_url", "https://t.me/");
+        auto t_me = td_->option_manager_->get_option_string("t_me_url", "https://t.me/");
         link = td_api::make_object<td_api::internalLinkTypeMessage>(
             PSTRING() << t_me << "c/" << channel_id.get() << '/' << sponsored_message.server_message_id.get());
       }
@@ -187,8 +189,9 @@ td_api::object_ptr<td_api::sponsoredMessage> SponsoredMessageManager::get_sponso
       break;
   }
   return td_api::make_object<td_api::sponsoredMessage>(
-      sponsored_message.local_id, sponsored_message.sponsor_dialog_id.get(), std::move(chat_invite_link_info),
-      std::move(link), get_message_content_object(sponsored_message.content.get(), td_, dialog_id, 0, false, true, -1));
+      sponsored_message.local_id, sponsored_message.is_recommended, sponsored_message.sponsor_dialog_id.get(),
+      std::move(chat_invite_link_info), std::move(link),
+      get_message_content_object(sponsored_message.content.get(), td_, dialog_id, 0, false, true, -1));
 }
 
 td_api::object_ptr<td_api::sponsoredMessage> SponsoredMessageManager::get_sponsored_message_object(
@@ -205,8 +208,7 @@ void SponsoredMessageManager::get_dialog_sponsored_message(
   if (!td_->messages_manager_->have_dialog_force(dialog_id, "get_dialog_sponsored_message")) {
     return promise.set_error(Status::Error(400, "Chat not found"));
   }
-  if (dialog_id.get_type() != DialogType::Channel ||
-      td_->contacts_manager_->get_channel_type(dialog_id.get_channel_id()) != ContactsManager::ChannelType::Broadcast) {
+  if (dialog_id.get_type() != DialogType::Channel) {
     return promise.set_value(nullptr);
   }
 
@@ -232,6 +234,10 @@ void SponsoredMessageManager::get_dialog_sponsored_message(
 
 void SponsoredMessageManager::on_get_dialog_sponsored_messages(
     DialogId dialog_id, Result<telegram_api::object_ptr<telegram_api::messages_sponsoredMessages>> &&result) {
+  if (result.is_ok() && G()->close_flag()) {
+    result = Global::request_aborted_error();
+  }
+
   auto &messages = dialog_sponsored_messages_[dialog_id];
   CHECK(messages != nullptr);
   auto promises = std::move(messages->promises);
@@ -239,14 +245,9 @@ void SponsoredMessageManager::on_get_dialog_sponsored_messages(
   CHECK(messages->messages.empty());
   CHECK(messages->message_random_ids.empty());
 
-  if (result.is_ok() && G()->close_flag()) {
-    result = Global::request_aborted_error();
-  }
   if (result.is_error()) {
     dialog_sponsored_messages_.erase(dialog_id);
-    for (auto &promise : promises) {
-      promise.set_error(result.error().clone());
-    }
+    fail_promises(promises, result.move_as_error());
     return;
   }
 
@@ -297,7 +298,7 @@ void SponsoredMessageManager::on_get_dialog_sponsored_messages(
     int32 ttl = 0;
     bool disable_web_page_preview = false;
     auto content = get_message_content(td_, std::move(message_text), nullptr, sponsor_dialog_id, true, UserId(), &ttl,
-                                       &disable_web_page_preview);
+                                       &disable_web_page_preview, "on_get_dialog_sponsored_messages");
     if (ttl != 0) {
       LOG(ERROR) << "Receive sponsored message with TTL " << ttl;
       continue;
@@ -313,9 +314,10 @@ void SponsoredMessageManager::on_get_dialog_sponsored_messages(
     auto local_id = current_sponsored_message_id_.get();
     CHECK(!current_sponsored_message_id_.is_valid());
     CHECK(!current_sponsored_message_id_.is_scheduled());
-    CHECK(messages->message_random_ids.count(local_id) == 0);
-    messages->message_random_ids[local_id] = sponsored_message->random_id_.as_slice().str();
-    messages->messages.emplace_back(local_id, sponsor_dialog_id, server_message_id,
+    auto is_inserted =
+        messages->message_random_ids.emplace(local_id, sponsored_message->random_id_.as_slice().str()).second;
+    CHECK(is_inserted);
+    messages->messages.emplace_back(local_id, sponsored_message->recommended_, sponsor_dialog_id, server_message_id,
                                     std::move(sponsored_message->start_param_), std::move(invite_hash),
                                     std::move(content));
   }

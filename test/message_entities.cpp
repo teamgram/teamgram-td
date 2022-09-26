@@ -6,6 +6,8 @@
 //
 #include "td/telegram/MessageEntity.h"
 
+#include "td/telegram/UserId.h"
+
 #include "td/utils/algorithm.h"
 #include "td/utils/common.h"
 #include "td/utils/format.h"
@@ -114,6 +116,8 @@ TEST(MessageEntities, hashtag) {
                     "ООО" + td::string(200, '2'),
                 {"#" + td::string(200, '1') + "ООО" + td::string(53, '2')});
   check_hashtag(u8"#a\u2122", {"#a"});
+  check_hashtag("#a൹", {"#a"});
+  check_hashtag("#aඁං෴ก฿", {"#aඁං෴ก"});
 }
 
 static void check_cashtag(const td::string &str, const td::vector<td::string> &expected) {
@@ -173,6 +177,12 @@ TEST(MessageEntities, cashtag) {
   check_cashtag(u8"$ABC\u2122", {"$ABC"});
   check_cashtag(u8"\u2122$ABC", {"$ABC"});
   check_cashtag(u8"\u2122$ABC\u2122", {"$ABC"});
+  check_cashtag("$ABC൹", {"$ABC"});
+  check_cashtag("$ABCඁ", {});
+  check_cashtag("$ABCං", {});
+  check_cashtag("$ABC෴", {});
+  check_cashtag("$ABCก", {});
+  check_cashtag("$ABC฿", {"$ABC"});
 }
 
 static void check_media_timestamp(const td::string &str, const td::vector<std::pair<td::string, td::int32>> &expected) {
@@ -552,7 +562,8 @@ TEST(MessageEntities, url) {
   check_url("http://ÀТеСт.МоСкВач", {"http://ÀТеСт.МоСкВач"});
   check_url("ÀÁ.com. ÀÁ.com.", {"ÀÁ.com", "ÀÁ.com"});
   check_url("ÀÁ.com,ÀÁ.com.", {"ÀÁ.com", "ÀÁ.com"});
-  check_url("teiegram.org", {});
+  check_url("teiegram.org/test", {});
+  check_url("TeiegraM.org/test", {});
   check_url("http://test.google.com/?q=abc()}[]def", {"http://test.google.com/?q=abc()"});
   check_url("http://test.google.com/?q=abc([{)]}def", {"http://test.google.com/?q=abc([{)]}def"});
   check_url("http://test.google.com/?q=abc(){}]def", {"http://test.google.com/?q=abc(){}"});
@@ -645,11 +656,11 @@ TEST(MessageEntities, url) {
   check_url("https://a.de}bc@c.com", {"https://a.de"}, {"bc@c.com"});
   check_url("https://a.de(bc@c.com", {"https://a.de"}, {"bc@c.com"});
   check_url("https://a.de)bc@c.com", {"https://a.de"}, {"bc@c.com"});
-  check_url("https://a.de\\bc@c.com", {"https://a.de\\bc@c.com"});
+  check_url("https://a.debc@c.com", {"https://a.debc@c.com"});
   check_url("https://a.de'bc@c.com", {"https://a.de"}, {"bc@c.com"});
   check_url("https://a.de`bc@c.com", {"https://a.de"}, {"bc@c.com"});
-  check_url("https://a.bc:de.fg@c.com", {"https://a.bc:de.fg@c.com"});
-  check_url("https://a:h.bc:de.fg@c.com", {"https://a:h.bc:de.fg@c.com"});
+  check_url("https://a.bcde.fg@c.com", {"https://a.bcde.fg@c.com"});
+  check_url("https://a:h.bcde.fg@c.com", {"https://a:h.bcde.fg@c.com"});
   check_url("https://abc@c.com", {"https://abc@c.com"});
   check_url("https://de[bc@c.com", {}, {"bc@c.com"});
   check_url("https://de/bc@c.com", {});
@@ -694,6 +705,7 @@ TEST(MessageEntities, url) {
   check_url("http://test―‑@―google―.―com―/―–―‐―/―/―/―?―‑―#―――", {"http://test―‑@―google―.―com―/―–―‐―/―/―/―?―‑―#―――"});
   check_url("http://google.com/‖", {"http://google.com/"});
   check_url("a@b@c.com", {}, {});
+  check_url("abc@c.com@d.com", {});
   check_url("a@b.com:c@1", {}, {"a@b.com"});
   check_url("test@test.software", {}, {"test@test.software"});
   check_url("a:b?@gmail.com", {});
@@ -702,6 +714,10 @@ TEST(MessageEntities, url) {
   check_url("a:b#@gmail.com", {});
   check_url("a!:b@gmail.com", {"a!:b@gmail.com"});
   check_url("a:b!@gmail.com", {"a:b!@gmail.com"});
+  check_url("http://test_.com", {});
+  check_url("test_.com", {});
+  check_url("_test.com", {});
+  check_url("_.test.com", {"_.test.com"});
 }
 
 static void check_fix_formatted_text(td::string str, td::vector<td::MessageEntity> entities,
@@ -824,6 +840,7 @@ TEST(MessageEntities, fix_formatted_text) {
   }
 
   str = "aba \r\n caba ";
+  td::UserId user_id(static_cast<td::int64>(1));
   for (td::int32 length = 1; length <= 3; length++) {
     for (td::int32 offset = 0; static_cast<size_t>(offset + length) <= str.size(); offset++) {
       for (auto type : {td::MessageEntity::Type::Bold, td::MessageEntity::Type::Url, td::MessageEntity::Type::TextUrl,
@@ -847,12 +864,22 @@ TEST(MessageEntities, fix_formatted_text) {
 
           td::vector<td::MessageEntity> entities;
           entities.emplace_back(type, offset, length);
+          if (type == td::MessageEntity::Type::TextUrl) {
+            entities.back().argument = "t.me";
+          } else if (type == td::MessageEntity::Type::MentionName) {
+            entities.back().user_id = user_id;
+          }
           td::vector<td::MessageEntity> fixed_entities;
           if (fixed_length > 0) {
             for (auto i = 0; i < length; i++) {
               if (!td::is_space(str[offset + i]) || type == td::MessageEntity::Type::TextUrl ||
                   type == td::MessageEntity::Type::MentionName) {
                 fixed_entities.emplace_back(type, fixed_offset, fixed_length);
+                if (type == td::MessageEntity::Type::TextUrl) {
+                  fixed_entities.back().argument = "t.me";
+                } else if (type == td::MessageEntity::Type::MentionName) {
+                  fixed_entities.back().user_id = user_id;
+                }
                 break;
               }
             }
@@ -897,9 +924,11 @@ TEST(MessageEntities, fix_formatted_text) {
         for (td::int32 offset2 = 0; offset2 <= 8 - length2; offset2++) {
           if (offset != offset2) {
             td::vector<td::MessageEntity> entities;
-            entities.emplace_back(td::MessageEntity::Type::TextUrl, offset, length);
-            entities.emplace_back(td::MessageEntity::Type::TextUrl, offset2, length2);
+            entities.emplace_back(td::MessageEntity::Type::TextUrl, offset, length, "t.me");
+            entities.emplace_back(td::MessageEntity::Type::TextUrl, offset2, length2, "t.me");
+            entities.emplace_back(td::MessageEntity::Type::TextUrl, offset2 + length2, 1);
             td::vector<td::MessageEntity> fixed_entities = entities;
+            fixed_entities.pop_back();
             std::sort(fixed_entities.begin(), fixed_entities.end());
             if (fixed_entities[0].offset + fixed_entities[0].length > fixed_entities[1].offset) {
               fixed_entities.pop_back();
@@ -930,8 +959,8 @@ TEST(MessageEntities, fix_formatted_text) {
       }
     }
 
-    check_fix_formatted_text(str, entities, td::utf8_utf16_substr(str, 3, 11), fixed_entities, false, false, false,
-                             false);
+    check_fix_formatted_text(str, entities, td::utf8_utf16_substr(str, 3, 11).str(), fixed_entities, false, false,
+                             false, false);
   }
 
   for (td::string text : {"\t", "\r", "\n", "\t ", "\r ", "\n "}) {
@@ -1329,6 +1358,15 @@ TEST(MessageEntities, parse_html) {
                    {{td::MessageEntity::Type::Pre, 6, 7}, {td::MessageEntity::Type::Code, 6, 6}});
   check_parse_html("🏟 🏟&lt;<pre> <code class=\"language-fift\">🏟 🏟&lt;</></>", "🏟 🏟< 🏟 🏟<",
                    {{td::MessageEntity::Type::Pre, 6, 7}, {td::MessageEntity::Type::Code, 7, 6}});
+  check_parse_html("➡️ ➡️<tg-emoji emoji-id = \"12345\">➡️ ➡️</tg-emoji><b>➡️ ➡️</b>",
+                   "➡️ ➡️➡️ ➡️➡️ ➡️",
+                   {{td::MessageEntity::Type::CustomEmoji, 5, 5, static_cast<td::int64>(12345)},
+                    {td::MessageEntity::Type::Bold, 10, 5}});
+  check_parse_html("🏟 🏟<tg-emoji emoji-id=\"54321\">🏟 &lt🏟</tg-emoji>", "🏟 🏟🏟 <🏟",
+                   {{td::MessageEntity::Type::CustomEmoji, 5, 6, static_cast<td::int64>(54321)}});
+  check_parse_html(
+      "🏟 🏟<b aba   =   caba><tg-emoji emoji-id=\"1\">🏟</tg-emoji>1</b>", "🏟 🏟🏟1",
+      {{td::MessageEntity::Type::Bold, 5, 3}, {td::MessageEntity::Type::CustomEmoji, 5, 2, static_cast<td::int64>(1)}});
 }
 
 static void check_parse_markdown(td::string text, const td::string &result,
@@ -1384,6 +1422,16 @@ TEST(MessageEntities, parse_markdown) {
   check_parse_markdown("🏟 🏟__🏟 _🏟___", "Can't find end of Italic entity at byte offset 23");
   check_parse_markdown("🏟 🏟__", "Can't find end of Underline entity at byte offset 9");
   check_parse_markdown("🏟 🏟||test\\|", "Can't find end of Spoiler entity at byte offset 9");
+  check_parse_markdown("🏟 🏟!", "Character '!' is reserved and must be escaped with the preceding '\\'");
+  check_parse_markdown("🏟 🏟![", "Can't find end of CustomEmoji entity at byte offset 9");
+  check_parse_markdown("🏟 🏟![👍", "Can't find end of CustomEmoji entity at byte offset 9");
+  check_parse_markdown("🏟 🏟![👍]", "Custom emoji entity must contain a tg://emoji URL");
+  check_parse_markdown("🏟 🏟![👍](tg://emoji?id=1234", "Can't find end of a custom emoji URL at byte offset 17");
+  check_parse_markdown("🏟 🏟![👍](t://emoji?id=1234)", "Custom emoji URL must have scheme tg");
+  check_parse_markdown("🏟 🏟![👍](tg:emojis?id=1234)", "Custom emoji URL must have host \"emoji\"");
+  check_parse_markdown("🏟 🏟![👍](tg://emoji#test)", "Custom emoji URL must have an emoji identifier");
+  check_parse_markdown("🏟 🏟![👍](tg://emoji?test=1#&id=25)", "Custom emoji URL must have an emoji identifier");
+  check_parse_markdown("🏟 🏟![👍](tg://emoji?test=1231&id=025)", "Invalid custom emoji identifier specified");
 
   check_parse_markdown("", "", {});
   check_parse_markdown("\\\\", "\\", {});
@@ -1455,6 +1503,8 @@ TEST(MessageEntities, parse_markdown) {
   check_parse_markdown("[telegram\\.org](asdasd)", "telegram.org", {});
   check_parse_markdown("[telegram\\.org](tg:user?id=123456)", "telegram.org",
                        {{0, 12, td::UserId(static_cast<td::int64>(123456))}});
+  check_parse_markdown("🏟 🏟![👍](TG://EMoJI/?test=1231&id=25#id=32)a", "🏟 🏟👍a",
+                       {{td::MessageEntity::Type::CustomEmoji, 5, 2, static_cast<td::int64>(25)}});
 }
 
 static void check_parse_markdown_v3(td::string text, td::vector<td::MessageEntity> entities,

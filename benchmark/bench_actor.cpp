@@ -12,6 +12,7 @@
 #include "td/utils/common.h"
 #include "td/utils/crypto.h"
 #include "td/utils/logging.h"
+#include "td/utils/Promise.h"
 #include "td/utils/SliceBuilder.h"
 
 #if TD_MSVC
@@ -45,10 +46,9 @@ class ActorTraits<TestActor> {
 }  // namespace td
 
 class CreateActorBench final : public td::Benchmark {
-  td::ConcurrentScheduler scheduler_;
+  td::ConcurrentScheduler scheduler_{0, 0};
 
   void start_up() final {
-    scheduler_.init(0);
     scheduler_.start();
   }
 
@@ -139,8 +139,7 @@ class RingBench final : public td::Benchmark {
   }
 
   void start_up() final {
-    scheduler_ = new td::ConcurrentScheduler();
-    scheduler_->init(thread_n_);
+    scheduler_ = new td::ConcurrentScheduler(thread_n_, 0);
 
     actor_array_ = td::vector<td::ActorId<PassActor>>(actor_n_);
     for (int i = 0; i < actor_n_; i++) {
@@ -259,6 +258,7 @@ class QueryBench final : public td::Benchmark {
         } else if (type == 4) {
           int val = 0;
           send_lambda(client_, [&] { val = n_ * n_; });
+          CHECK(val == n_ * n_);
         } else if (type == 5) {
           send_closure(client_, &ClientActor::f_promise,
                        td::PromiseCreator::lambda([actor_id = actor_id(this), n = n_](td::Unit) {
@@ -291,8 +291,7 @@ class QueryBench final : public td::Benchmark {
   };
 
   void start_up() final {
-    scheduler_ = new td::ConcurrentScheduler();
-    scheduler_->init(0);
+    scheduler_ = new td::ConcurrentScheduler(0, 0);
 
     server_ = scheduler_->create_actor_unsafe<ServerActor>(0, "Server");
     scheduler_->start();

@@ -6,7 +6,6 @@
 //
 #include "td/telegram/SecretChatsManager.h"
 
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/ContactsManager.h"
 #include "td/telegram/DhCache.h"
 #include "td/telegram/EncryptedFile.h"
@@ -27,8 +26,6 @@
 #include "td/db/binlog/BinlogEvent.h"
 #include "td/db/binlog/BinlogHelper.h"
 #include "td/db/binlog/BinlogInterface.h"
-
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/common.h"
 #include "td/utils/format.h"
@@ -323,7 +320,7 @@ unique_ptr<SecretChatActor::Context> SecretChatsManager::make_secret_chat_contex
     }
 
     bool get_config_option_boolean(const string &name) const final {
-      return G()->shared_config().get_option_boolean(name);
+      return G()->get_option_boolean(name);
     }
 
     int32 unix_time() final {

@@ -55,6 +55,7 @@ void AuthManager::DbState::store(StorerT &storer) const {
   bool is_wait_registration_supported = true;
   bool is_wait_registration_stores_phone_number = true;
   bool is_wait_qr_code_confirmation_supported = true;
+  bool is_time_store_supported = true;
   BEGIN_STORE_FLAGS();
   STORE_FLAG(has_terms_of_service);
   STORE_FLAG(is_pbkdf2_supported);
@@ -62,17 +63,27 @@ void AuthManager::DbState::store(StorerT &storer) const {
   STORE_FLAG(is_wait_registration_supported);
   STORE_FLAG(is_wait_registration_stores_phone_number);
   STORE_FLAG(is_wait_qr_code_confirmation_supported);
+  STORE_FLAG(allow_apple_id_);
+  STORE_FLAG(allow_google_id_);
+  STORE_FLAG(is_time_store_supported);
   END_STORE_FLAGS();
   store(state_, storer);
   store(api_id_, storer);
   store(api_hash_, storer);
-  store(state_timestamp_, storer);
+  store_time(state_timestamp_.at(), storer);
 
   if (has_terms_of_service) {
     store(terms_of_service_, storer);
   }
 
-  if (state_ == State::WaitCode) {
+  if (state_ == State::WaitEmailAddress) {
+    store(send_code_helper_, storer);
+  } else if (state_ == State::WaitEmailCode) {
+    store(send_code_helper_, storer);
+    store(email_address_, storer);
+    store(email_code_info_, storer);
+    store(next_phone_number_login_date_, storer);
+  } else if (state_ == State::WaitCode) {
     store(send_code_helper_, storer);
   } else if (state_ == State::WaitQrCodeConfirmation) {
     store(other_user_ids_, storer);
@@ -96,6 +107,7 @@ void AuthManager::DbState::parse(ParserT &parser) {
   bool is_wait_registration_supported = false;
   bool is_wait_registration_stores_phone_number = false;
   bool is_wait_qr_code_confirmation_supported = false;
+  bool is_time_store_supported = false;
   if (parser.version() >= static_cast<int32>(Version::AddTermsOfService)) {
     BEGIN_PARSE_FLAGS();
     PARSE_FLAG(has_terms_of_service);
@@ -104,26 +116,39 @@ void AuthManager::DbState::parse(ParserT &parser) {
     PARSE_FLAG(is_wait_registration_supported);
     PARSE_FLAG(is_wait_registration_stores_phone_number);
     PARSE_FLAG(is_wait_qr_code_confirmation_supported);
+    PARSE_FLAG(allow_apple_id_);
+    PARSE_FLAG(allow_google_id_);
+    PARSE_FLAG(is_time_store_supported);
     END_PARSE_FLAGS();
   }
-  if (!is_wait_qr_code_confirmation_supported) {
-    return parser.set_error("Have no QR code confirmation support");
+  if (!is_time_store_supported) {
+    return parser.set_error("Have no time store support");
   }
   CHECK(is_pbkdf2_supported);
   CHECK(is_srp_supported);
   CHECK(is_wait_registration_supported);
   CHECK(is_wait_registration_stores_phone_number);
+  CHECK(is_wait_qr_code_confirmation_supported);
 
   parse(state_, parser);
   parse(api_id_, parser);
   parse(api_hash_, parser);
-  parse(state_timestamp_, parser);
+  double state_timestamp = 0.0;
+  parse_time(state_timestamp, parser);
+  state_timestamp_ = Timestamp::at(state_timestamp);
 
   if (has_terms_of_service) {
     parse(terms_of_service_, parser);
   }
 
-  if (state_ == State::WaitCode) {
+  if (state_ == State::WaitEmailAddress) {
+    parse(send_code_helper_, parser);
+  } else if (state_ == State::WaitEmailCode) {
+    parse(send_code_helper_, parser);
+    parse(email_address_, parser);
+    parse(email_code_info_, parser);
+    parse(next_phone_number_login_date_, parser);
+  } else if (state_ == State::WaitCode) {
     parse(send_code_helper_, parser);
   } else if (state_ == State::WaitQrCodeConfirmation) {
     parse(other_user_ids_, parser);

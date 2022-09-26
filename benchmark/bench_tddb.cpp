@@ -16,12 +16,12 @@
 #include "td/db/SqliteDb.h"
 
 #include "td/actor/ConcurrentScheduler.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/benchmark.h"
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/logging.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Random.h"
 #include "td/utils/Status.h"
 
@@ -87,8 +87,7 @@ class MessagesDbBench final : public td::Benchmark {
   std::shared_ptr<td::MessagesDbAsyncInterface> messages_db_async_;
 
   td::Status do_start_up() {
-    scheduler_ = td::make_unique<td::ConcurrentScheduler>();
-    scheduler_->init(1);
+    scheduler_ = td::make_unique<td::ConcurrentScheduler>(1, 0);
 
     auto guard = scheduler_->get_main_guard();
 

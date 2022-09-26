@@ -7,7 +7,6 @@
 #include "td/telegram/AnimationsManager.h"
 
 #include "td/telegram/AuthManager.h"
-#include "td/telegram/ConfigShared.h"
 #include "td/telegram/DialogId.h"
 #include "td/telegram/Document.h"
 #include "td/telegram/DocumentsManager.h"
@@ -17,6 +16,8 @@
 #include "td/telegram/Global.h"
 #include "td/telegram/logevent/LogEvent.h"
 #include "td/telegram/misc.h"
+#include "td/telegram/OptionManager.h"
+#include "td/telegram/PhotoFormat.h"
 #include "td/telegram/secret_api.h"
 #include "td/telegram/Td.h"
 #include "td/telegram/td_api.h"
@@ -25,8 +26,6 @@
 #include "td/telegram/telegram_api.h"
 
 #include "td/db/SqliteKeyValueAsync.h"
-
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/algorithm.h"
 #include "td/utils/logging.h"
@@ -127,17 +126,17 @@ class SaveGifQuery final : public Td::ResultHandler {
 };
 
 AnimationsManager::AnimationsManager(Td *td, ActorShared<> parent) : td_(td), parent_(std::move(parent)) {
-  auto limit_string = G()->td_db()->get_binlog_pmc()->get("saved_animations_limit");
-  if (!limit_string.empty()) {
-    auto new_limit = to_integer<int32>(limit_string);
-    if (new_limit > 0) {
-      LOG(DEBUG) << "Load saved animations limit = " << new_limit;
-      saved_animations_limit_ = new_limit;
-    } else {
-      LOG(ERROR) << "Wrong saved animations limit = \"" << limit_string << "\" stored in database";
-    }
-  }
+  on_update_animation_search_emojis();
+  on_update_animation_search_provider();
+  on_update_saved_animations_limit();
+
   next_saved_animations_load_time_ = Time::now();
+
+  G()->td_db()->get_binlog_pmc()->erase("saved_animations_limit");  // legacy
+}
+
+AnimationsManager::~AnimationsManager() {
+  Scheduler::instance()->destroy_on_scheduler(G()->get_gc_scheduler_id(), animations_);
 }
 
 void AnimationsManager::tear_down() {
@@ -145,9 +144,9 @@ void AnimationsManager::tear_down() {
 }
 
 int32 AnimationsManager::get_animation_duration(FileId file_id) const {
-  auto it = animations_.find(file_id);
-  CHECK(it != animations_.end());
-  return it->second->duration;
+  const auto *animation = get_animation(file_id);
+  CHECK(animation != nullptr);
+  return animation->duration;
 }
 
 tl_object_ptr<td_api::animation> AnimationsManager::get_animation_object(FileId file_id) const {
@@ -155,9 +154,7 @@ tl_object_ptr<td_api::animation> AnimationsManager::get_animation_object(FileId 
     return nullptr;
   }
 
-  auto it = animations_.find(file_id);
-  CHECK(it != animations_.end());
-  auto animation = it->second.get();
+  auto animation = get_animation(file_id);
   CHECK(animation != nullptr);
   auto thumbnail =
       animation->animated_thumbnail.file_id.is_valid()
@@ -228,13 +225,7 @@ FileId AnimationsManager::on_get_animation(unique_ptr<Animation> new_animation, 
 }
 
 const AnimationsManager::Animation *AnimationsManager::get_animation(FileId file_id) const {
-  auto animation = animations_.find(file_id);
-  if (animation == animations_.end()) {
-    return nullptr;
-  }
-
-  CHECK(animation->second->file_id == file_id);
-  return animation->second.get();
+  return animations_.get_pointer(file_id);
 }
 
 FileId AnimationsManager::get_animation_thumbnail_file_id(FileId file_id) const {
@@ -270,7 +261,7 @@ FileId AnimationsManager::dup_animation(FileId new_id, FileId old_id) {
   return new_id;
 }
 
-void AnimationsManager::merge_animations(FileId new_id, FileId old_id, bool can_delete_old) {
+void AnimationsManager::merge_animations(FileId new_id, FileId old_id) {
   CHECK(old_id.is_valid() && new_id.is_valid());
   CHECK(new_id != old_id);
 
@@ -279,19 +270,10 @@ void AnimationsManager::merge_animations(FileId new_id, FileId old_id, bool can_
   CHECK(old_ != nullptr);
 
   bool need_merge = true;
-  auto new_it = animations_.find(new_id);
-  if (new_it == animations_.end()) {
-    auto &old = animations_[old_id];
-    if (!can_delete_old) {
-      dup_animation(new_id, old_id);
-    } else {
-      old->file_id = new_id;
-      animations_.emplace(new_id, std::move(old));
-    }
+  const auto *new_ = get_animation(new_id);
+  if (new_ == nullptr) {
+    dup_animation(new_id, old_id);
   } else {
-    Animation *new_ = new_it->second.get();
-    CHECK(new_ != nullptr);
-
     if (old_->thumbnail != new_->thumbnail) {
       //    LOG_STATUS(td_->file_manager_->merge(new_->thumbnail.file_id, old_->thumbnail.file_id));
     }
@@ -301,9 +283,6 @@ void AnimationsManager::merge_animations(FileId new_id, FileId old_id, bool can_
   }
   if (need_merge) {
     LOG_STATUS(td_->file_manager_->merge(new_id, old_id));
-  }
-  if (can_delete_old) {
-    animations_.erase(old_id);
   }
 }
 
@@ -383,12 +362,12 @@ tl_object_ptr<telegram_api::InputMedia> AnimationsManager::get_input_media(
 
 SecretInputMedia AnimationsManager::get_secret_input_media(FileId animation_file_id,
                                                            tl_object_ptr<telegram_api::InputEncryptedFile> input_file,
-                                                           const string &caption, BufferSlice thumbnail) const {
+                                                           const string &caption, BufferSlice thumbnail,
+                                                           int32 layer) const {
   auto *animation = get_animation(animation_file_id);
   CHECK(animation != nullptr);
   auto file_view = td_->file_manager_->get_file_view(animation_file_id);
-  auto &encryption_key = file_view.encryption_key();
-  if (!file_view.is_encrypted_secret() || encryption_key.empty()) {
+  if (!file_view.is_encrypted_secret() || file_view.encryption_key().empty()) {
     return SecretInputMedia{};
   }
   if (file_view.has_remote_location()) {
@@ -414,23 +393,26 @@ SecretInputMedia AnimationsManager::get_secret_input_media(FileId animation_file
   }
   attributes.push_back(make_tl_object<secret_api::documentAttributeAnimated>());
 
-  return SecretInputMedia{
-      std::move(input_file),
-      make_tl_object<secret_api::decryptedMessageMediaDocument>(
-          std::move(thumbnail), animation->thumbnail.dimensions.width, animation->thumbnail.dimensions.height,
-          animation->mime_type, narrow_cast<int32>(file_view.size()), BufferSlice(encryption_key.key_slice()),
-          BufferSlice(encryption_key.iv_slice()), std::move(attributes), caption)};
+  return {std::move(input_file),
+          std::move(thumbnail),
+          animation->thumbnail.dimensions,
+          animation->mime_type,
+          file_view,
+          std::move(attributes),
+          caption,
+          layer};
 }
 
-void AnimationsManager::on_update_animation_search_emojis(string animation_search_emojis) {
+void AnimationsManager::on_update_animation_search_emojis() {
   if (G()->close_flag()) {
     return;
   }
   if (td_->auth_manager_->is_bot()) {
-    G()->shared_config().set_option_empty("animation_search_emojis");
+    td_->option_manager_->set_option_empty("animation_search_emojis");
     return;
   }
 
+  auto animation_search_emojis = td_->option_manager_->get_option_string("animation_search_emojis");
   is_animation_search_emojis_inited_ = true;
   if (animation_search_emojis_ == animation_search_emojis) {
     return;
@@ -440,15 +422,16 @@ void AnimationsManager::on_update_animation_search_emojis(string animation_searc
   try_send_update_animation_search_parameters();
 }
 
-void AnimationsManager::on_update_animation_search_provider(string animation_search_provider) {
+void AnimationsManager::on_update_animation_search_provider() {
   if (G()->close_flag()) {
     return;
   }
   if (td_->auth_manager_->is_bot()) {
-    G()->shared_config().set_option_empty("animation_search_provider");
+    td_->option_manager_->set_option_empty("animation_search_provider");
     return;
   }
 
+  string animation_search_provider = td_->option_manager_->get_option_string("animation_search_provider");
   is_animation_search_provider_inited_ = true;
   if (animation_search_provider_ == animation_search_provider) {
     return;
@@ -458,11 +441,15 @@ void AnimationsManager::on_update_animation_search_provider(string animation_sea
   try_send_update_animation_search_parameters();
 }
 
-void AnimationsManager::on_update_saved_animations_limit(int32 saved_animations_limit) {
+void AnimationsManager::on_update_saved_animations_limit() {
+  if (G()->close_flag()) {
+    return;
+  }
+  auto saved_animations_limit =
+      narrow_cast<int32>(td_->option_manager_->get_option_integer("saved_animations_limit", 200));
   if (saved_animations_limit != saved_animations_limit_) {
     if (saved_animations_limit > 0) {
       LOG(INFO) << "Update saved animations limit to " << saved_animations_limit;
-      G()->td_db()->get_binlog_pmc()->set("saved_animations_limit", to_string(saved_animations_limit));
       saved_animations_limit_ = saved_animations_limit;
       if (static_cast<int32>(saved_animation_ids_.size()) > saved_animations_limit_) {
         saved_animation_ids_.resize(saved_animations_limit_);
@@ -587,11 +574,7 @@ void AnimationsManager::on_load_saved_animations_finished(vector<FileId> &&saved
   saved_animation_ids_ = std::move(saved_animation_ids);
   are_saved_animations_loaded_ = true;
   send_update_saved_animations(from_database);
-  auto promises = std::move(load_saved_animations_queries_);
-  load_saved_animations_queries_.clear();
-  for (auto &promise : promises) {
-    promise.set_value(Unit());
-  }
+  set_promises(load_saved_animations_queries_);
 }
 
 void AnimationsManager::on_get_saved_animations(
@@ -636,11 +619,7 @@ void AnimationsManager::on_get_saved_animations(
   }
 
   if (is_repair) {
-    auto promises = std::move(repair_saved_animations_queries_);
-    repair_saved_animations_queries_.clear();
-    for (auto &promise : promises) {
-      promise.set_value(Unit());
-    }
+    set_promises(repair_saved_animations_queries_);
   } else {
     on_load_saved_animations_finished(std::move(saved_animation_ids));
 
@@ -656,12 +635,7 @@ void AnimationsManager::on_get_saved_animations_failed(bool is_repair, Status er
     are_saved_animations_being_loaded_ = false;
     next_saved_animations_load_time_ = Time::now_cached() + Random::fast(5, 10);
   }
-  auto &queries = is_repair ? repair_saved_animations_queries_ : load_saved_animations_queries_;
-  auto promises = std::move(queries);
-  queries.clear();
-  for (auto &promise : promises) {
-    promise.set_error(error.clone());
-  }
+  fail_promises(is_repair ? repair_saved_animations_queries_ : load_saved_animations_queries_, std::move(error));
 }
 
 int64 AnimationsManager::get_saved_animations_hash(const char *source) const {
@@ -727,7 +701,7 @@ void AnimationsManager::add_saved_animation_impl(FileId animation_id, bool add_o
     return promise.set_error(Status::Error(400, "Animation file not found"));
   }
 
-  LOG(INFO) << "Add saved animation " << animation_id << " with main file " << file_view.file_id();
+  LOG(INFO) << "Add saved animation " << animation_id << " with main file " << file_view.get_main_file_id();
   if (!are_saved_animations_loaded_) {
     load_saved_animations(
         PromiseCreator::lambda([animation_id, add_on_server, promise = std::move(promise)](Result<> result) mutable {
@@ -808,7 +782,11 @@ void AnimationsManager::remove_saved_animation(const tl_object_ptr<td_api::Input
   }
 
   FileId file_id = r_file_id.ok();
-  if (!td::remove(saved_animation_ids_, file_id)) {
+  auto is_equal = [animation_id = file_id](FileId file_id) {
+    return file_id == animation_id ||
+           (file_id.get_remote() == animation_id.get_remote() && animation_id.get_remote() != 0);
+  };
+  if (!td::remove_if(saved_animation_ids_, is_equal)) {
     return promise.set_value(Unit());
   }
 
@@ -890,12 +868,6 @@ string AnimationsManager::get_animation_search_text(FileId file_id) const {
   auto animation = get_animation(file_id);
   CHECK(animation != nullptr);
   return animation->file_name;
-}
-
-void AnimationsManager::after_get_difference() {
-  if (td_->is_online() && !td_->auth_manager_->is_bot()) {
-    get_saved_animations(Auto());
-  }
 }
 
 void AnimationsManager::get_current_state(vector<td_api::object_ptr<td_api::Update>> &updates) const {

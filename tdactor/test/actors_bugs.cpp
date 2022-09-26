@@ -6,7 +6,7 @@
 //
 #include "td/actor/actor.h"
 #include "td/actor/ConcurrentScheduler.h"
-#include "td/actor/Timeout.h"
+#include "td/actor/MultiTimeout.h"
 
 #include "td/utils/common.h"
 #include "td/utils/logging.h"
@@ -14,9 +14,7 @@
 #include "td/utils/tests.h"
 
 TEST(MultiTimeout, bug) {
-  td::ConcurrentScheduler sched;
-  int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(0, 0);
 
   sched.start();
   td::unique_ptr<td::MultiTimeout> multi_timeout;
@@ -91,9 +89,7 @@ class TimeoutManager final : public td::Actor {
 td::int32 TimeoutManager::count;
 
 TEST(MultiTimeout, Destroy) {
-  td::ConcurrentScheduler sched;
-  int threads_n = 0;
-  sched.init(threads_n);
+  td::ConcurrentScheduler sched(0, 0);
 
   auto timeout_manager = sched.create_actor_unsafe<TimeoutManager>(0, "TimeoutManager");
   TimeoutManager *manager = timeout_manager.get().get_actor_unsafe();

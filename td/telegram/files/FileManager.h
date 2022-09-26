@@ -21,19 +21,20 @@
 #include "td/telegram/telegram_api.h"
 
 #include "td/actor/actor.h"
-#include "td/actor/PromiseFuture.h"
 
 #include "td/utils/buffer.h"
 #include "td/utils/common.h"
 #include "td/utils/Container.h"
 #include "td/utils/Enumerator.h"
-#include "td/utils/FlatHashMap.h"
 #include "td/utils/FlatHashSet.h"
 #include "td/utils/logging.h"
 #include "td/utils/optional.h"
+#include "td/utils/Promise.h"
 #include "td/utils/Slice.h"
 #include "td/utils/Status.h"
 #include "td/utils/StringBuilder.h"
+#include "td/utils/WaitFreeHashMap.h"
+#include "td/utils/WaitFreeVector.h"
 
 #include <map>
 #include <memory>
@@ -126,7 +127,7 @@ class FileNode {
   friend class FileManager;
 
   static constexpr char PERSISTENT_ID_VERSION_OLD = 2;
-  static constexpr char PERSISTENT_ID_VERSION_MAP = 3;
+  static constexpr char PERSISTENT_ID_VERSION_GENERATED = 3;
   static constexpr char PERSISTENT_ID_VERSION = 4;
 
   LocalFileLocation local_;
@@ -150,7 +151,7 @@ class FileNode {
   DialogId owner_dialog_id_;
   FileEncryptionKey encryption_key_;
   FileDbId pmc_id_;
-  std::vector<FileId> file_ids_;
+  vector<FileId> file_ids_;
 
   FileId main_file_id_;
 
@@ -268,7 +269,7 @@ class FileView {
 
   bool get_by_hash() const;
 
-  FileId file_id() const {
+  FileId get_main_file_id() const {
     return node_->main_file_id_;
   }
 
@@ -305,10 +306,10 @@ class FileView {
     return get_type() == FileType::Encrypted;
   }
   bool is_encrypted_secure() const {
-    return get_type() == FileType::Secure;
+    return get_type() == FileType::SecureEncrypted;
   }
   bool is_secure() const {
-    return get_type() == FileType::Secure || get_type() == FileType::SecureRaw;
+    return get_type() == FileType::SecureEncrypted || get_type() == FileType::SecureDecrypted;
   }
   bool is_encrypted_any() const {
     return is_encrypted_secret() || is_encrypted_secure();
@@ -371,9 +372,6 @@ class FileManager final : public FileLoadManager::Callback {
     UploadCallback &operator=(const UploadCallback &) = delete;
     virtual ~UploadCallback() = default;
 
-    virtual void on_progress(FileId file_id) {
-    }
-
     // After on_upload_ok all uploads of this file will be paused till merge, delete_partial_remote_location or
     // explicit upload request with the same file_id.
     // Also upload may be resumed after some other merges.
@@ -385,6 +383,8 @@ class FileManager final : public FileLoadManager::Callback {
 
   class Context {
    public:
+    virtual bool need_notify_on_new_files() = 0;
+
     virtual void on_new_file(int64 size, int64 real_size, int32 cnt) = 0;
 
     virtual void on_file_updated(FileId size) = 0;
@@ -418,6 +418,8 @@ class FileManager final : public FileLoadManager::Callback {
 
   static bool are_modification_times_equal(int64 old_mtime, int64 new_mtime);
 
+  static bool is_remotely_generated_file(Slice conversion);
+
   void init_actor();
 
   FileId dup_file_id(FileId file_id);
@@ -450,6 +452,8 @@ class FileManager final : public FileLoadManager::Callback {
   bool set_encryption_key(FileId file_id, FileEncryptionKey key);
   bool set_content(FileId file_id, BufferSlice bytes);
 
+  void check_local_location(FileId file_id);
+
   void download(FileId file_id, std::shared_ptr<DownloadCallback> callback, int32 new_priority, int64 offset,
                 int64 limit);
   void upload(FileId file_id, std::shared_ptr<UploadCallback> callback, int32 new_priority, uint64 upload_order);
@@ -462,13 +466,13 @@ class FileManager final : public FileLoadManager::Callback {
 
   Result<string> get_suggested_file_name(FileId file_id, const string &directory);
 
-  void read_file_part(FileId file_id, int32 offset, int32 count, int left_tries,
+  void read_file_part(FileId file_id, int64 offset, int64 count, int left_tries,
                       Promise<td_api::object_ptr<td_api::filePart>> promise);
 
   void delete_file(FileId file_id, Promise<Unit> promise, const char *source);
 
-  void external_file_generate_write_part(int64 id, int32 offset, string data, Promise<> promise);
-  void external_file_generate_progress(int64 id, int32 expected_size, int32 local_prefix_size, Promise<> promise);
+  void external_file_generate_write_part(int64 id, int64 offset, string data, Promise<> promise);
+  void external_file_generate_progress(int64 id, int64 expected_size, int64 local_prefix_size, Promise<> promise);
   void external_file_generate_finish(int64 id, Status status, Promise<> promise);
 
   Result<FileId> from_persistent_id(CSlice persistent_id, FileType file_type) TD_WARN_UNUSED_RESULT;
@@ -481,10 +485,14 @@ class FileManager final : public FileLoadManager::Callback {
                                              DialogId owner_dialog_id, bool is_encrypted) TD_WARN_UNUSED_RESULT;
   Result<FileId> get_input_file_id(FileType type, const tl_object_ptr<td_api::InputFile> &file,
                                    DialogId owner_dialog_id, bool allow_zero, bool is_encrypted,
-                                   bool get_by_hash = false, bool is_secure = false) TD_WARN_UNUSED_RESULT;
+                                   bool get_by_hash = false, bool is_secure = false,
+                                   bool force_reuse = false) TD_WARN_UNUSED_RESULT;
 
   Result<FileId> get_map_thumbnail_file_id(Location location, int32 zoom, int32 width, int32 height, int32 scale,
                                            DialogId owner_dialog_id) TD_WARN_UNUSED_RESULT;
+
+  Result<FileId> get_audio_thumbnail_file_id(string title, string performer, bool is_small,
+                                             DialogId owner_dialog_id) TD_WARN_UNUSED_RESULT;
 
   FileType guess_file_type(const tl_object_ptr<td_api::InputFile> &file);
 
@@ -576,15 +584,15 @@ class FileManager final : public FileLoadManager::Callback {
   };
   Enumerator<RemoteInfo> remote_location_info_;
 
-  FlatHashMap<string, FileId> file_hash_to_file_id_;
+  WaitFreeHashMap<string, FileId> file_hash_to_file_id_;
 
   std::map<FullLocalFileLocation, FileId> local_location_to_file_id_;
   std::map<FullGenerateFileLocation, FileId> generate_location_to_file_id_;
   std::map<FileDbId, int32> pmc_id_to_file_node_id_;
 
-  vector<FileIdInfo> file_id_info_;
-  vector<int32> empty_file_ids_;
-  vector<unique_ptr<FileNode>> file_nodes_;
+  WaitFreeVector<FileIdInfo> file_id_info_;
+  WaitFreeVector<int32> empty_file_ids_;
+  WaitFreeVector<unique_ptr<FileNode>> file_nodes_;
   ActorOwn<FileLoadManager> file_load_manager_;
   ActorOwn<FileGenerateManager> file_generate_manager_;
 
@@ -619,7 +627,7 @@ class FileManager final : public FileLoadManager::Callback {
   void flush_to_pmc(FileNodePtr node, bool new_remote, bool new_local, bool new_generate, const char *source);
   void load_from_pmc(FileNodePtr node, bool new_remote, bool new_local, bool new_generate);
 
-  Result<FileId> from_persistent_id_map(Slice binary, FileType file_type);
+  Result<FileId> from_persistent_id_generated(Slice binary, FileType file_type);
   Result<FileId> from_persistent_id_v2(Slice binary, FileType file_type);
   Result<FileId> from_persistent_id_v3(Slice binary, FileType file_type);
   Result<FileId> from_persistent_id_v23(Slice binary, FileType file_type, int32 version);
@@ -643,7 +651,7 @@ class FileManager final : public FileLoadManager::Callback {
   void do_cancel_download(FileNodePtr node);
   void do_cancel_upload(FileNodePtr node);
   void do_cancel_generate(FileNodePtr node);
-  void run_upload(FileNodePtr node, std::vector<int> bad_parts);
+  void run_upload(FileNodePtr node, vector<int> bad_parts);
   void run_download(FileNodePtr node, bool force_update_priority);
   void run_generate(FileNodePtr node);
 
@@ -659,7 +667,7 @@ class FileManager final : public FileLoadManager::Callback {
 
   void on_error_impl(FileNodePtr node, Query::Type type, bool was_active, Status status);
 
-  void on_partial_generate(QueryId, PartialLocalFileLocation partial_local, int32 expected_size);
+  void on_partial_generate(QueryId, PartialLocalFileLocation partial_local, int64 expected_size);
   void on_generate_ok(QueryId, FullLocalFileLocation local);
 
   std::pair<Query, bool> finish_query(QueryId query_id);

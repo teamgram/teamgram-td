@@ -133,7 +133,7 @@ static string clean_filename_part(Slice name, int max_length) {
   int size = 0;
   for (auto *it = name.ubegin(); it != name.uend() && size < max_length;) {
     uint32 code;
-    it = next_utf8_unsafe(it, &code, "clean_filename_part");
+    it = next_utf8_unsafe(it, &code);
     if (!is_ok(code)) {
       if (prepare_search_character(code) == 0) {
         continue;
@@ -159,8 +159,8 @@ string clean_filename(CSlice name) {
   }
 
   PathView path_view(name);
-  auto filename = clean_filename_part(path_view.file_stem(), 60);
-  auto extension = clean_filename_part(path_view.extension(), 20);
+  auto filename = clean_filename_part(path_view.file_stem(), 64);
+  auto extension = clean_filename_part(path_view.extension(), 16);
   if (!extension.empty()) {
     if (filename.empty()) {
       filename = std::move(extension);

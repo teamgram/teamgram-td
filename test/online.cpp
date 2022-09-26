@@ -4,26 +4,32 @@
 // Distributed under the Boost Software License, Version 1.0. (See accompanying
 // file LICENSE_1_0.txt or copy at http://www.boost.org/LICENSE_1_0.txt)
 //
-#include <iostream>
-#include <map>
-#include <tdutils/td/utils/FileLog.h>
-#include <tdutils/td/utils/OptionParser.h>
-#include <tdutils/td/utils/port/path.h>
-#include <td/telegram/ClientActor.h>
-#include <tdutils/td/utils/filesystem.h>
-#include "td/telegram/TdCallback.h"
-#include "td/utils/port/signals.h"
+#include "td/telegram/ClientActor.h"
 #include "td/telegram/Log.h"
-#include "td/utils/crypto.h"
-#include "td/utils/misc.h"
-#include "td/utils/Random.h"
+#include "td/telegram/td_api_json.h"
+#include "td/telegram/TdCallback.h"
+
 #include "td/actor/actor.h"
 #include "td/actor/ConcurrentScheduler.h"
-#include "td/actor/PromiseFuture.h"
 #include "td/actor/MultiPromise.h"
-#include "td/telegram/td_api_json.h"
+#include "td/actor/PromiseFuture.h"
+
+#include "td/utils/crypto.h"
+#include "td/utils/FileLog.h"
+#include "td/utils/filesystem.h"
+#include "td/utils/misc.h"
+#include "td/utils/OptionParser.h"
+#include "td/utils/port/path.h"
+#include "td/utils/port/signals.h"
+#include "td/utils/Promise.h"
+#include "td/utils/Random.h"
+
+#include <iostream>
+#include <map>
+#include <memory>
 
 namespace td {
+
 template <class T>
 static void check_td_error(T &result) {
   LOG_CHECK(result->get_id() != td::td_api::error::ID) << to_string(result);
@@ -155,7 +161,7 @@ class Task : public TestClient::Listener {
   void on_update(std::shared_ptr<TestClient::Update> update) override {
     auto it = sent_queries_.find(update->id);
     if (it != sent_queries_.end()) {
-      it->second(std::move(update->object));
+      it->second.set_value(std::move(update->object));
       sent_queries_.erase(it);
     }
     process_update(update);
@@ -224,27 +230,23 @@ class InitTask : public Task {
     start_flag_ = true;
     td::tl_object_ptr<td::td_api::Function> function;
     switch (authorization_state->get_id()) {
-      case td::td_api::authorizationStateWaitEncryptionKey::ID:
-        send(td::make_tl_object<td::td_api::checkDatabaseEncryptionKey>());
-        break;
       case td::td_api::authorizationStateReady::ID:
         promise_.set_value({});
         stop();
         break;
       case td::td_api::authorizationStateWaitTdlibParameters::ID: {
-        auto parameters = td::td_api::make_object<td::td_api::tdlibParameters>();
-        parameters->use_test_dc_ = true;
-        parameters->database_directory_ = options_.name + TD_DIR_SLASH;
-        parameters->use_message_database_ = true;
-        parameters->use_secret_chats_ = true;
-        parameters->api_id_ = options_.api_id;
-        parameters->api_hash_ = options_.api_hash;
-        parameters->system_language_code_ = "en";
-        parameters->device_model_ = "Desktop";
-        parameters->application_version_ = "tdclient-test";
-        parameters->ignore_file_names_ = false;
-        parameters->enable_storage_optimizer_ = true;
-        send(td::td_api::make_object<td::td_api::setTdlibParameters>(std::move(parameters)));
+        auto request = td::td_api::make_object<td::td_api::setTdlibParameters>();
+        request->use_test_dc_ = true;
+        request->database_directory_ = options_.name + TD_DIR_SLASH;
+        request->use_message_database_ = true;
+        request->use_secret_chats_ = true;
+        request->api_id_ = options_.api_id;
+        request->api_hash_ = options_.api_hash;
+        request->system_language_code_ = "en";
+        request->device_model_ = "Desktop";
+        request->application_version_ = "tdclient-test";
+        request->enable_storage_optimizer_ = true;
+        send(std::move(request));
         break;
       }
       default:
@@ -283,7 +285,7 @@ class GetMe : public Task {
     int64 user_id;
     int64 chat_id;
   };
-  GetMe(Promise<Result> promise) : promise_(std::move(promise)) {
+  explicit GetMe(Promise<Result> promise) : promise_(std::move(promise)) {
   }
   void start_up() override {
     send_query(td::make_tl_object<td::td_api::getMe>(), [this](auto res) { with_user_id(res.move_as_ok()->id_); });
@@ -419,7 +421,7 @@ class TestDownloadFile : public Task {
       unlink(file.local_->path_).ignore();
     }
 
-    size_t size = file.size_;
+    auto size = narrow_cast<size_t>(file.size_);
     Random::Xorshift128plus rnd(123);
 
     size_t begin = 0;
@@ -454,13 +456,14 @@ class TestDownloadFile : public Task {
   }
 
   void start_chunk() {
-    send_query(td::make_tl_object<td::td_api::downloadFile>(file_id_, 1, int(ranges_.back().begin),
-                                                            int(ranges_.back().end - ranges_.back().begin), true),
+    send_query(td::make_tl_object<td::td_api::downloadFile>(
+                   file_id_, 1, static_cast<int64>(ranges_.back().begin),
+                   static_cast<int64>(ranges_.back().end - ranges_.back().begin), true),
                [this](auto res) { got_chunk(*res.ok()); });
   }
 };
 
-std::string gen_readable_file(size_t block_size, size_t block_count) {
+static std::string gen_readable_file(size_t block_size, size_t block_count) {
   std::string content;
   for (size_t block_id = 0; block_id < block_count; block_id++) {
     std::string block;
@@ -482,7 +485,7 @@ class TestTd : public Actor {
     string api_hash;
   };
 
-  TestTd(Options options) : options_(std::move(options)) {
+  explicit TestTd(Options options) : options_(std::move(options)) {
   }
 
  private:
@@ -614,8 +617,7 @@ int main(int argc, char **argv) {
   }
   SET_VERBOSITY_LEVEL(new_verbosity_level);
 
-  td::ConcurrentScheduler sched;
-  sched.init(4);
+  td::ConcurrentScheduler sched(4, 0);
   sched.create_actor_unsafe<TestTd>(0, "TestTd", std::move(test_options)).release();
   sched.start();
   while (sched.run_main(10)) {

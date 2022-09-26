@@ -122,6 +122,30 @@ TEST(Port, SparseFiles) {
   td::unlink(path).ensure();
 }
 
+TEST(Port, LargeFiles) {
+  td::CSlice path = "large.txt";
+  td::unlink(path).ignore();
+  auto fd = td::FileFd::open(path, td::FileFd::Write | td::FileFd::CreateNew).move_as_ok();
+  ASSERT_EQ(0, fd.get_size().move_as_ok());
+  td::int64 offset = static_cast<td::int64>(3) << 30;
+  if (fd.pwrite("abcd", offset).is_error()) {
+    LOG(ERROR) << "Writing to large files isn't supported";
+    td::unlink(path).ensure();
+    return;
+  }
+  fd = td::FileFd::open(path, td::FileFd::Read).move_as_ok();
+  ASSERT_EQ(offset + 4, fd.get_size().move_as_ok());
+  td::string res(4, '\0');
+  if (fd.pread(res, offset).is_error()) {
+    LOG(ERROR) << "Reading of large files isn't supported";
+    td::unlink(path).ensure();
+    return;
+  }
+  ASSERT_STREQ(res, "abcd");
+  fd.close();
+  td::unlink(path).ensure();
+}
+
 TEST(Port, Writev) {
   td::vector<td::IoSlice> vec;
   td::CSlice test_file_path = "test.txt";
@@ -259,4 +283,32 @@ TEST(Port, EventFdAndSignals) {
   flag.clear();
 }
 #endif
+#endif
+
+#if TD_HAVE_THREAD_AFFINITY
+TEST(Port, ThreadAffinityMask) {
+  auto thread_id = td::this_thread::get_id();
+  auto old_mask = td::thread::get_affinity_mask(thread_id);
+  LOG(INFO) << "Initial thread " << thread_id << " affinity mask: " << old_mask;
+  for (size_t i = 0; i < 64; i++) {
+    auto mask = td::thread::get_affinity_mask(thread_id);
+    LOG(INFO) << mask;
+    auto result = td::thread::set_affinity_mask(thread_id, static_cast<td::uint64>(1) << i);
+    LOG(INFO) << i << ": " << result << ' ' << td::thread::get_affinity_mask(thread_id);
+
+    if (i <= 1) {
+      td::thread thread([] {
+        auto thread_id = td::this_thread::get_id();
+        auto mask = td::thread::get_affinity_mask(thread_id);
+        LOG(INFO) << "New thread " << thread_id << " affinity mask: " << mask;
+        auto result = td::thread::set_affinity_mask(thread_id, 1);
+        LOG(INFO) << "Thread " << thread_id << ": " << result << ' ' << td::thread::get_affinity_mask(thread_id);
+      });
+    }
+  }
+  auto result = td::thread::set_affinity_mask(thread_id, old_mask);
+  LOG(INFO) << result;
+  old_mask = td::thread::get_affinity_mask(thread_id);
+  LOG(INFO) << old_mask;
+}
 #endif

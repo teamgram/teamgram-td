@@ -11,7 +11,6 @@
 #include "td/utils/bits.h"
 #include "td/utils/CancellationToken.h"
 #include "td/utils/common.h"
-#include "td/utils/emoji.h"
 #include "td/utils/ExitGuard.h"
 #include "td/utils/Hash.h"
 #include "td/utils/HashMap.h"
@@ -624,6 +623,26 @@ TEST(Misc, unicode) {
   test_unicode(td::remove_diacritics);
 }
 
+TEST(Misc, get_unicode_simple_category) {
+  td::uint32 result = 0;
+  for (size_t t = 0; t < 100; t++) {
+    for (td::uint32 i = 0; i <= 0x10ffff; i++) {
+      result = result * 123 + static_cast<td::uint32>(static_cast<int>(td::get_unicode_simple_category(i)));
+    }
+  }
+  LOG(INFO) << result;
+}
+
+TEST(Misc, get_unicode_simple_category_small) {
+  td::uint32 result = 0;
+  for (size_t t = 0; t < 1000; t++) {
+    for (td::uint32 i = 0; i <= 0xffff; i++) {
+      result = result * 123 + static_cast<td::uint32>(static_cast<int>(td::get_unicode_simple_category(i)));
+    }
+  }
+  LOG(INFO) << result;
+}
+
 TEST(BigNum, from_decimal) {
   ASSERT_TRUE(td::BigNum::from_decimal("").is_error());
   ASSERT_TRUE(td::BigNum::from_decimal("a").is_error());
@@ -1213,27 +1232,6 @@ TEST(Misc, uname) {
   ASSERT_STREQ(first_version, second_version);
   ASSERT_EQ(first_version.begin(), second_version.begin());
   ASSERT_TRUE(!first_version.empty());
-}
-
-TEST(Misc, is_emoji) {
-  ASSERT_TRUE(td::is_emoji("👩🏼‍❤‍💋‍👩🏻"));
-  ASSERT_TRUE(td::is_emoji("👩🏼‍❤️‍💋‍👩🏻"));
-  ASSERT_TRUE(!td::is_emoji("👩🏼‍❤️️‍💋‍👩🏻"));
-  ASSERT_TRUE(td::is_emoji("⌚"));
-  ASSERT_TRUE(td::is_emoji("↔"));
-  ASSERT_TRUE(td::is_emoji("🪗"));
-  ASSERT_TRUE(td::is_emoji("2️⃣"));
-  ASSERT_TRUE(td::is_emoji("2⃣"));
-  ASSERT_TRUE(!td::is_emoji(" 2⃣"));
-  ASSERT_TRUE(!td::is_emoji("2⃣ "));
-  ASSERT_TRUE(!td::is_emoji(" "));
-  ASSERT_TRUE(!td::is_emoji(""));
-  ASSERT_TRUE(!td::is_emoji("1234567890123456789012345678901234567890123456789012345678901234567890"));
-  ASSERT_TRUE(td::is_emoji("❤️"));
-  ASSERT_TRUE(td::is_emoji("❤"));
-  ASSERT_TRUE(td::is_emoji("⌚"));
-  ASSERT_TRUE(td::is_emoji("🎄"));
-  ASSERT_TRUE(td::is_emoji("🧑‍🎄"));
 }
 
 TEST(Misc, serialize) {
